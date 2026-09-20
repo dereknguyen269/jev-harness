@@ -2,11 +2,12 @@ package policy
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
-const policyPath = "/home/ubuntu/jev-harness/configs/policy.yaml"
+var policyPath = filepath.Join("..", "..", "configs", "policy.yaml")
 
 func loadPolicy(t *testing.T) *PolicyConfig {
 	t.Helper()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,9 +64,13 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 			Decision:        policy.Block,
 			Risk:            0.9,
 			Confidence:      0.8,
-			Reason:          fmt.Sprintf("internal error: %v", err),
+			Reason:          "internal error",
 			RequestApproval: false,
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(resp)
+		return
 	}
 
 	if s.audit != nil {
@@ -96,9 +102,59 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func loadEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		log.Printf("failed to open %s: %v", path, err)
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(line[7:])
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Strip inline comments: only when # is at start or preceded by whitespace
+		if idx := strings.IndexAny(line, " \t#"); idx > 0 && line[idx] == '#' {
+			line = strings.TrimSpace(line[:idx])
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+		os.Setenv(key, value)
+	}
+	if err := scanner.Err(); err != nil {
+		log.Printf("error reading .env: %v", err)
+	}
+}
+
 func main() {
+	loadEnv(".env")
+
 	listen := flag.String("listen", "127.0.0.1:8787", "HTTP listen address")
 	policyPath := flag.String("policy", "configs/policy.yaml", "Path to policy file")
+	jevEndpoint := flag.String("jev-endpoint", "", "Jev API endpoint URL (defaults to https://api.typesafe.ai/v1/systemone)")
+	jevAPIKey := flag.String("jev-api-key", "", "Jev API key (overrides TYPESAFE_API_KEY / OPENROUTER_API_KEY env vars)")
 	flag.Parse()
 
 	pc, err := policy.Load(*policyPath)
@@ -106,7 +162,60 @@ func main() {
 		log.Fatalf("failed to load policy: %v", err)
 	}
 
-	je := jev.NewClient(os.Getenv("OPENROUTER_API_KEY"))
+	jevAPIKeySet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "jev-api-key" {
+			jevAPIKeySet = true
+		}
+	})
+	apiKey := *jevAPIKey
+	if !jevAPIKeySet {
+		if apiKey == "" {
+			apiKey = os.Getenv("JEV_API_KEY")
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("TYPESAFE_API_KEY")
+		}
+		if apiKey == "" {
+			apiKey = os.Getenv("OPENROUTER_API_KEY")
+		}
+	}
+	endpoint := *jevEndpoint
+	if endpoint == "" {
+		endpoint = os.Getenv("JEV_ENDPOINT")
+	}
+	model := os.Getenv("JEV_MODEL")
+
+	// Auto-select provider endpoint from env vars when not explicitly set
+	if endpoint == "" {
+		if os.Getenv("TYPESAFE_API_KEY") != "" {
+			endpoint = "https://api.typesafe.ai/v1/systemone"
+			if model == "" {
+				model = "typesafe-ai/jev"
+			}
+		} else if os.Getenv("OPENROUTER_API_KEY") != "" {
+			endpoint = "https://openrouter.ai/api/v1/decisions"
+			if model == "" {
+				model = "~typesafe/jev-latest"
+			}
+		} else if os.Getenv("JEV_API_KEY") != "" {
+			endpoint = "https://api.typesafe.ai/v1/systemone"
+			if model == "" {
+				model = "typesafe-ai/jev"
+			}
+		}
+	}
+	// Override endpoint for evaluation models when endpoint not explicitly set via flag
+	if *jevEndpoint == "" && (strings.HasPrefix(model, "typesafe-ai/") || strings.Contains(model, "jev")) {
+		if strings.Contains(endpoint, "/v1/evaluate") {
+			endpoint = "https://ai-gateway.vercel.sh/v1/evaluate"
+		} else if strings.Contains(endpoint, "/v1/decisions") {
+			endpoint = "https://openrouter.ai/api/v1/decisions"
+		} else {
+			endpoint = "https://api.typesafe.ai/v1/systemone"
+		}
+	}
+	je := jev.NewClient(apiKey, endpoint, model, "")
 	cache := policy.NewCache(5 * time.Minute)
 	eng := policy.NewEngine(pc, je, cache)
 
@@ -117,7 +226,7 @@ func main() {
 		engine:  eng,
 		audit:   audit,
 		cache:   cache,
-		timeout: 500 * time.Millisecond,
+		timeout: 10 * time.Second,
 	}
 
 	r := mux.NewRouter()
