@@ -36,7 +36,7 @@ type DecisionRequest struct {
 	TurnID    string         `json:"turn_id"`
 	Tool      string         `json:"tool"`
 	Args      map[string]any `json:"args"`
-	Context   RequestContext  `json:"context"`
+	Context   RequestContext `json:"context"`
 }
 
 type PolicyInfo struct {
@@ -159,7 +159,6 @@ func (e *Engine) Evaluate(ctx context.Context, req DecisionRequest) (DecisionRes
 
 	cacheKey := hashKey(req.Tool, ta, req.Context)
 	if cached, ok := e.cache.Get(cacheKey); ok {
-		cached.Policy.RuleID = "cache"
 		return cached, nil
 	}
 
@@ -193,7 +192,7 @@ func (e *Engine) Evaluate(ctx context.Context, req DecisionRequest) (DecisionRes
 			},
 		},
 		"risk_level": {
-			Type: "score",
+			Type:         "score",
 			Instructions: "What is the risk level of this tool call? 1=minimal, 2=low, 3=moderate, 4=high, 5=critical",
 			Criteria: map[string]any{
 				"1": "minimal risk",
@@ -287,6 +286,7 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 					Risk:            1.0,
 					Confidence:      1.0,
 					Reason:          fmt.Sprintf("Blocked by rule %s: %s", r.ID, target),
+					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: false,
 				}, true
 			case "approval_required":
@@ -295,6 +295,7 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 					Risk:            0.8,
 					Confidence:      0.9,
 					Reason:          fmt.Sprintf("Approval required by rule %s: %s", r.ID, target),
+					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: true,
 				}, true
 			case "allow":
@@ -303,6 +304,7 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 					Risk:            0.0,
 					Confidence:      1.0,
 					Reason:          fmt.Sprintf("Allowed by rule %s", r.ID),
+					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: false,
 				}, true
 			}

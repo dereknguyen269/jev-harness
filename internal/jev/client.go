@@ -31,9 +31,9 @@ func NewClient(apiKey string) *Client {
 }
 
 type decisionRequest struct {
-	Model     string           `json:"model"`
-	State     map[string]any   `json:"state"`
-	Questions map[string]any   `json:"questions"`
+	Model     string         `json:"model"`
+	State     map[string]any `json:"state"`
+	Questions map[string]any `json:"questions"`
 }
 
 type decisionResponse struct {
