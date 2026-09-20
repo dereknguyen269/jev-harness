@@ -186,10 +186,10 @@ Every `/v1/check` decision is appended as JSONL to
 ## Testing
 
 ```bash
-go test ./internal/policy/ -v
+go test ./... -v
 ```
 
-All 12 tests pass on macOS. Tests use a `mockJevClient` — no network services needed.
+All 12 tests pass from the repository root. Tests use a `mockJevClient` — no network services needed.
 
 ## License
 
