@@ -1,0 +1,155 @@
+rules:
+  # Terminal rules
+  - id: root-delete
+    tool: terminal
+    pattern: "rm\\s+-rf\\s+/"
+    action: block
+    priority: 100
+  - id: force-push
+    tool: terminal
+    pattern: "git\\s+push\\s+--force"
+    action: approval_required
+    priority: 90
+  - id: docker-production
+    tool: terminal
+    pattern: "docker\\s+(rm|rmi|kill|stop|system\\s+prune).*production"
+    action: approval_required
+    priority: 90
+  - id: sudo-command
+    tool: terminal
+    pattern: "sudo\\s+"
+    action: approval_required
+    priority: 85
+  - id: systemctl-stop
+    tool: terminal
+    pattern: "systemctl\\s+(stop|disable|restart|kill)"
+    action: approval_required
+    priority: 85
+  - id: kubectl-delete
+    tool: terminal
+    pattern: "kubectl\\s+delete"
+    action: approval_required
+    priority: 85
+  - id: git-reset-hard
+    tool: terminal
+    pattern: "git\\s+reset\\s+--hard"
+    action: approval_required
+    priority: 80
+  - id: mkfs-command
+    tool: terminal
+    pattern: "mkfs"
+    action: block
+    priority: 100
+  - id: dd-command
+    tool: terminal
+    pattern: "dd\\s+if="
+    action: block
+    priority: 100
+  - id: chmod-777-root
+    tool: terminal
+    pattern: "chmod\\s+777\\s+/"
+    action: block
+    priority: 100
+  - id: chown-root
+    tool: terminal
+    pattern: "chown\\s+-R\\s+root\\s+/"
+    action: block
+    priority: 100
+
+  # File write rules
+  - id: env-write
+    tool: write_file
+    pattern: "\\.env"
+    action: approval_required
+    priority: 95
+  - id: ssh-write
+    tool: write_file
+    pattern: "\\.ssh/"
+    action: approval_required
+    priority: 95
+  - id: aws-config-write
+    tool: write_file
+    pattern: "\\.aws/"
+    action: approval_required
+    priority: 90
+  - id: pem-write
+    tool: write_file
+    pattern: "\\.pem$"
+    action: approval_required
+    priority: 95
+  - id: key-write
+    tool: write_file
+    pattern: "\\.key$"
+    action: approval_required
+    priority: 95
+  - id: id-rsa-write
+    tool: write_file
+    pattern: "id_rsa"
+    action: approval_required
+    priority: 95
+  - id: id-ed25519-write
+    tool: write_file
+    pattern: "id_ed25519"
+    action: approval_required
+    priority: 95
+  - id: authorized-keys-write
+    tool: write_file
+    pattern: "authorized_keys"
+    action: approval_required
+    priority: 95
+
+  # Patch rules
+  - id: patch-env
+    tool: patch
+    pattern: "\\.env"
+    action: approval_required
+    priority: 95
+  - id: patch-ssh
+    tool: patch
+    pattern: "\\.ssh/"
+    action: approval_required
+    priority: 95
+
+  # Browser rules
+  - id: browser-external-navigate
+    tool: browser_navigate
+    pattern: "http"
+    action: approval_required
+    priority: 50
+  - id: browser-extract
+    tool: browser_extract
+    pattern: "http"
+    action: approval_required
+    priority: 50
+
+  # Default allow for read operations
+  - id: allow-read
+    tool: read_file
+    pattern: ".*"
+    action: allow
+    priority: 10
+  - id: allow-git-status
+    tool: terminal
+    pattern: "git\\s+status"
+    action: allow
+    priority: 10
+  - id: allow-git-log
+    tool: terminal
+    pattern: "git\\s+log"
+    action: allow
+    priority: 10
+  - id: allow-git-diff
+    tool: terminal
+    pattern: "git\\s+diff"
+    action: allow
+    priority: 10
+  - id: allow-pwd
+    tool: terminal
+    pattern: "^pwd$"
+    action: allow
+    priority: 10
+  - id: allow-ls
+    tool: terminal
+    pattern: "^ls"
+    action: allow
+    priority: 10
