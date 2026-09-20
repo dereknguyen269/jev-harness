@@ -3,17 +3,24 @@ package policy
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
 
-var policyPath = filepath.Join("..", "..", "configs", "policy.yaml")
+func policyPath(t *testing.T) string {
+	t.Helper()
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to locate test source file")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "..", "configs", "policy.yaml"))
+}
 
 func loadPolicy(t *testing.T) *PolicyConfig {
-	t.Helper()
-	pc, err := Load(policyPath)
+	pc, err := Load(policyPath(t))
 	if err != nil {
-		t.Fatalf("Load(%s) failed: %v", policyPath, err)
+		t.Fatalf("Load(%s) failed: %v", policyPath(t), err)
 	}
 	return pc
 }
@@ -230,7 +237,7 @@ func TestNormalize_BrowserNavigatesNetwork(t *testing.T) {
 }
 
 func TestLoad_PolicyFile(t *testing.T) {
-	pc, err := Load(policyPath)
+	pc, err := Load(policyPath(t))
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
