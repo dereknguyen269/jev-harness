@@ -19,10 +19,10 @@ curl http://127.0.0.1:8787/health
 ## Testing
 
 ```bash
-cd internal/policy && go test ./ -v
+go test ./... -v
 ```
 
-Only test file (`internal/policy/engine_test.go`). All 12 tests pass on macOS. `engine_test.go:9` uses `../..` relative path, so tests **must** run from `internal/policy/`. No CI, no Makefile, no pre-commit hooks. Tests use `mockJevClient` — no network services needed.
+All 12 tests pass from the repository root. Tests use a `mockJevClient` — no network services needed.
 
 ## Key files
 
@@ -70,7 +70,7 @@ Only test file (`internal/policy/engine_test.go`). All 12 tests pass on macOS. `
 ## Gotchas
 
 - `.gitignore` ignores `.env`, `guard`, `*.test.json`, `*.log` — don't commit env files or built binaries.
-- `engine_test.go:9` has a hardcoded relative policy path (`../..`). Tests must run from `internal/policy/` directory.
+- `engine_test.go` uses `runtime.Caller` for portable policy path resolution — tests run from any directory.
 - Policy `priority` field is parsed but **not used** — rules match in YAML file order.
 - `.opencode/plugins/jev-guard.js` must match `plugins/opencode/jev-guard.js`. Run `./generate-opencode-plugin.sh my-jev-harness --project` to regenerate after changes.
 - `generate-opencode-plugin.sh` takes `<plugin-name> [--global|--project]`; flag is `$2`, not `$1` (plugin name is ignored).

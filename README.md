@@ -1,7 +1,7 @@
 # Jev Guard Harness
 
-A policy enforcement layer for agent CLIs (Hermes, OpenCode) that runs a deterministic
-check first, then consults a Jev API for ambiguous cases, and **fails closed** when the
+A policy enforcement layer for OpenCode that runs a deterministic check first,
+then consults a Jev API for ambiguous cases, and **fails closed** when the
 upstream service is unreachable.
 
 ## Architecture
@@ -78,20 +78,9 @@ integrate. Fail closed on any error.
 | Adapter | Status | Notes |
 |---------|--------|-------|
 | OpenCode | ✅ Implemented | `plugins/opencode/jev-guard.js`, hooks `tool.execute.before`; install via `generate-opencode-plugin.sh` (see below). |
-| Hermes | ⚠️ Example only | `pre_tool_call` hook sketch below; no adapter code in this repo yet. (The default audit path lives under `~/.hermes` for historical reasons.) |
 | Claude Code | ❌ Not implemented | |
 | OpenClaw | ❌ Not implemented | |
 | Generic / any CLI | ✅ Via HTTP | POST to `/v1/check`; treat `block`, `approval_required`, and any error/5xx as deny. |
-
-### Hermes
-
-```python
-# ~/.hermes/plugins/hermes-guard/__init__.py
-ctx.register_hook("pre_tool_call", pre_tool_call_guard)
-```
-
-The hook fires before every tool call. If the guard blocks it, the tool is never
-executed (fail-closed).
 
 ### OpenCode
 
