@@ -22,7 +22,7 @@ curl http://127.0.0.1:8787/health
 go test ./... -v
 ```
 
-All 12 tests pass from the repository root. Tests use a `mockJevClient` — no network services needed.
+All 20 tests pass from the repository root (12 core + 8 Kiro). Tests use a `mockJevClient` — no network services needed.
 
 ## Key files
 
@@ -37,6 +37,9 @@ All 12 tests pass from the repository root. Tests use a `mockJevClient` — no n
 | `.opencode/opencode.json` | References plugin `"jev-guard"` |
 | `.opencode/package.json` | Plugin dependency `@opencode-ai/plugin` v1.18.31 |
 | `generate-opencode-plugin.sh` | Copies `plugins/opencode/jev-guard.js` to install target |
+| `plugins/kiro/jev-guard.py` | Canonical Kiro PreToolUse hook (stdlib only; stdin JSON > flags > env) |
+| `plugins/kiro/hooks/jev-guard.json.template` | Kiro hook template (`__GUARD_SCRIPT__` rendered at install) |
+| `generate-kiro-plugin.sh` | Installs Kiro hook (`--project` to `.kiro/`, `--global` to `~/.kiro/`) |
 
 ## Architecture
 
@@ -57,7 +60,7 @@ All 12 tests pass from the repository root. Tests use a `mockJevClient` — no n
 - `/v1/check` POST returns `{"decision": "allow"|"block"|"approval_required", ...}`. Unknown commands with no Jev client → `block` (fail-closed).
 - Audit logging writes JSONL to `$HOME/.hermes/guard/audit.jsonl` by default, or `$AUDIT_PATH` if set.
 - `/v1/audit` GET is a stub — returns "not yet implemented".
-- `Normalize()` maps tool names: `terminal`/`bash` → execute, `write_file`/`write` → write, `browser_navigate`/`browser` → navigate. Unknown tools fall through to generic extractor.
+- `Normalize()` maps tool names incl. Kiro: `execute_bash` → `terminal`/execute, `fs_write`/`fs_append`/`str_replace`/`delete_file`/`smart_relocate` → `write_file`/write (delete flags destructive, relocate uses destination path). Unknown tools fall through to generic extractor.
 - HTTP client timeout: 10 seconds (500ms was too short for Vercel gateway).
 
 ## Dependencies
@@ -75,3 +78,5 @@ All 12 tests pass from the repository root. Tests use a `mockJevClient` — no n
 - `.opencode/plugins/jev-guard.js` must match `plugins/opencode/jev-guard.js`. Run `./generate-opencode-plugin.sh my-jev-harness --project` to regenerate after changes.
 - `generate-opencode-plugin.sh` takes `<plugin-name> [--global|--project]`; flag is `$2`, not `$1` (plugin name is ignored).
 - `generate-opencode-plugin.sh` copies source to `.opencode/plugins/jev-guard.js` for project install; config path is `./.opencode/opencode.json`.
+- `.kiro/hooks/jev-guard.json` + `.kiro/scripts/jev-guard.py` are generated copies of `plugins/kiro/*`. Run `./generate-kiro-plugin.sh --project --force` (or `--global`) to regenerate after changes.
+- `generate-kiro-plugin.sh` usage is `./generate-kiro-plugin.sh [--global|--project] [--project-dir DIR] [--force]` (scope flag first, unlike the opencode script).

@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Jev Guard (PreToolUse)",
+      "trigger": "PreToolUse",
+      "description": "Routes mutating tool calls through the local Jev guard service. Guard blocks become interactive approve/reject prompts; only risk >= JEV_GUARD_HARD_BLOCK_RISK is refused outright. Guard unreachable also prompts.",
+      "matcher": "^(execute_bash|fs_write|str_replace|fs_append|delete_file|smart_relocate)$",
+      "action": {
+        "type": "command",
+        "command": "JEV_GUARD_TIMEOUT_MS=${JEV_GUARD_TIMEOUT_MS:-5000} JEV_GUARD_BLOCK_MODE=${JEV_GUARD_BLOCK_MODE:-ask} JEV_GUARD_HARD_BLOCK_RISK=${JEV_GUARD_HARD_BLOCK_RISK:-0.9} python3 __GUARD_SCRIPT__",
+        "timeout": 15
+      }
+    }
+  ]
+}

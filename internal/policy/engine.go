@@ -278,7 +278,22 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 		case ta.Resource != "":
 			target = ta.Resource
 		}
-		if re.MatchString(target) {
+		// Also test Resource when it carries information beyond the primary
+		// target (e.g. smart_relocate stores "src -> dst" while Path is dst
+		// only), so file rules see both ends of the operation.
+		targets := []string{target}
+		if ta.Resource != "" && ta.Resource != target {
+			targets = append(targets, ta.Resource)
+		}
+		matched := false
+		for _, t := range targets {
+			if re.MatchString(t) {
+				matched = true
+				target = t
+				break
+			}
+		}
+		if matched {
 			switch strings.ToLower(r.Action) {
 			case "block":
 				return DecisionResponse{
@@ -316,21 +331,49 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 func Normalize(tool string, args map[string]any) ToolAction {
 	ta := ToolAction{Tool: tool}
 	switch tool {
-	case "terminal", "bash":
+	case "terminal", "bash", "execute_bash", "executeBash":
+		ta.Tool = "terminal"
 		ta.Operation = "execute"
-		if c, ok := args["command"].(string); ok {
+		if c := firstString(args, "command", "cmd", "commandLine"); c != "" {
 			ta.Command = c
 			ta.Destructive = isDestructiveCommand(c)
 		}
 		if w, ok := args["workdir"].(string); ok {
 			ta.Resource = w
 		}
-	case "write_file", "write":
+	case "write_file", "write", "fs_write", "fs_append", "str_replace":
+		ta.Tool = "write_file"
 		ta.Operation = "write"
-		if p, ok := args["path"].(string); ok {
+		if p := firstString(args, "path", "file", "file_path", "filePath", "filename"); p != "" {
 			ta.Path = p
 			ta.Resource = p
 			ta.Sensitive = isSensitivePath(p)
+		}
+	case "delete_file", "deleteFile":
+		ta.Tool = "write_file"
+		ta.Operation = "write"
+		ta.Destructive = true
+		if p := firstString(args, "path", "file", "file_path", "filePath", "filename"); p != "" {
+			ta.Path = p
+			ta.Resource = p
+			ta.Sensitive = isSensitivePath(p)
+		}
+	case "smart_relocate", "move", "rename":
+		ta.Tool = "write_file"
+		ta.Operation = "write"
+		ta.Destructive = true
+		dst := firstString(args, "destination", "to", "dest", "newPath", "path")
+		src := firstString(args, "source", "from", "oldPath")
+		if dst != "" {
+			ta.Path = dst
+			ta.Sensitive = isSensitivePath(dst)
+		}
+		if src != "" && dst != "" {
+			ta.Resource = src + " -> " + dst
+		} else if dst != "" {
+			ta.Resource = dst
+		} else if src != "" {
+			ta.Resource = src
 		}
 	case "patch":
 		ta.Operation = "patch"
@@ -372,6 +415,15 @@ func Normalize(tool string, args map[string]any) ToolAction {
 		}
 	}
 	return ta
+}
+
+func firstString(args map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := args[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func isDestructiveCommand(cmd string) bool {

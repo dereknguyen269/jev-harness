@@ -289,3 +289,88 @@ func (m *mockJevClient) Evaluate(ctx context.Context, state map[string]any, ques
 func float64Ptr(f float64) *float64 {
 	return &f
 }
+
+func TestNormalize_KiroExecuteBashMapsToTerminal(t *testing.T) {
+	ta := Normalize("execute_bash", map[string]any{"command": "rm -rf /"})
+	if ta.Tool != "terminal" {
+		t.Errorf("expected tool=terminal, got %s", ta.Tool)
+	}
+	if ta.Operation != "execute" {
+		t.Errorf("expected operation=execute, got %s", ta.Operation)
+	}
+	if !ta.Destructive {
+		t.Error("expected Destructive=true for rm -rf /")
+	}
+}
+
+func TestNormalize_KiroFsWriteMapsToWriteFile(t *testing.T) {
+	ta := Normalize("fs_write", map[string]any{"path": "/home/user/.env"})
+	if ta.Tool != "write_file" {
+		t.Errorf("expected tool=write_file, got %s", ta.Tool)
+	}
+	if !ta.Sensitive {
+		t.Error("expected Sensitive=true for .env file")
+	}
+}
+func TestNormalize_KiroDeleteFileIsDestructive(t *testing.T) {
+	ta := Normalize("delete_file", map[string]any{"path": "notes.txt"})
+	if ta.Tool != "write_file" {
+		t.Errorf("expected tool=write_file, got %s", ta.Tool)
+	}
+	if !ta.Destructive {
+		t.Error("expected Destructive=true for delete_file")
+	}
+}
+func TestNormalize_KiroSmartRelocateUsesDestination(t *testing.T) {
+	ta := Normalize("smart_relocate", map[string]any{"source": "a.txt", "destination": "b.txt"})
+	if ta.Tool != "write_file" {
+		t.Errorf("expected tool=write_file, got %s", ta.Tool)
+	}
+	if ta.Path != "b.txt" {
+		t.Errorf("expected destination path, got %s", ta.Path)
+	}
+}
+func TestNormalize_KiroStrReplaceAltPathKey(t *testing.T) {
+	ta := Normalize("str_replace", map[string]any{"file": "main.go"})
+	if ta.Path != "main.go" {
+		t.Errorf("expected path=main.go, got %s", ta.Path)
+	}
+}
+func TestEngine_KiroExecuteBashBlockedByTerminalRule(t *testing.T) {
+	pc := loadPolicy(t)
+	eng := NewEngine(pc, nil, NewCache(5*time.Minute))
+	req := DecisionRequest{Tool: "execute_bash"}
+	req.Args = map[string]any{"command": "rm -rf /"}
+	resp, err := eng.Evaluate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Decision != Block {
+		t.Errorf("expected Block, got %s", resp.Decision)
+	}
+	if resp.Policy.RuleID != "root-delete" {
+		t.Errorf("expected rule root-delete, got %s", resp.Policy.RuleID)
+	}
+}
+func TestNormalize_KiroSmartRelocateIsDestructive(t *testing.T) {
+	ta := Normalize("smart_relocate", map[string]any{"source": "a.txt", "destination": "b.txt"})
+	if !ta.Destructive {
+		t.Error("expected Destructive=true for smart_relocate (source is removed)")
+	}
+}
+func TestEngine_KiroRelocateSensitiveSourceNeedsApproval(t *testing.T) {
+	pc := loadPolicy(t)
+	eng := NewEngine(pc, nil, NewCache(5*time.Minute))
+	req := DecisionRequest{Tool: "smart_relocate"}
+	req.Args = map[string]any{"source": "/proj/" + ".env", "destination": "backup.txt"}
+	resp, err := eng.Evaluate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Decision != ApprovalRequired {
+		t.Errorf("expected ApprovalRequired, got %s", resp.Decision)
+	}
+	if resp.Policy.RuleID != "env-write" {
+		t.Errorf("expected rule env-write, got %s", resp.Policy.RuleID)
+	}
+}
