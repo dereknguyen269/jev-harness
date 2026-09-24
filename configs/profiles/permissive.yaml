@@ -1,0 +1,11 @@
+# Permissive profile: minimal friction, still blocks critical deletes.
+policies:
+  - id: root-delete
+    match:
+      tool: terminal
+      command:
+        regex: 'rm\s+-rf\s+/'
+    decision:
+      action: block
+      risk: 1.0
+      reason_code: CRITICAL_DELETE

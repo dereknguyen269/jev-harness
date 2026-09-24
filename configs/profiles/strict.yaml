@@ -1,0 +1,44 @@
+# Strict profile: edits ask, production blocks.
+policies:
+  - id: root-delete
+    match:
+      tool: terminal
+      command:
+        regex: 'rm\s+-rf\s+/'
+    decision:
+      action: block
+      risk: 1.0
+      reason_code: CRITICAL_DELETE
+  - id: sudo
+    match:
+      tool: terminal
+      command:
+        regex: '\bsudo\b'
+    decision:
+      action: approval_required
+      risk: 0.85
+      reason_code: PRIVILEGED
+  - id: production
+    match:
+      context:
+        environment: production
+    decision:
+      action: block
+      risk: 1.0
+      reason_code: PROD_BLOCKED
+  - id: write-any
+    match:
+      tool: write_file
+    decision:
+      action: approval_required
+      risk: 0.6
+      reason_code: STRICT_WRITE
+  - id: git-read
+    match:
+      tool: terminal
+      command:
+        regex: '^git\s+(status|diff|log)'
+    decision:
+      action: allow
+      risk: 0.05
+      reason_code: READ

@@ -122,6 +122,118 @@ rules:
     action: approval_required
     priority: 50
 
+  # Git rules
+  - id: allow-git-branch
+    tool: terminal
+    pattern: "git\\s+branch"
+    action: allow
+    priority: 10
+  - id: allow-git-checkout
+    tool: terminal
+    pattern: "git\\s+checkout"
+    action: allow
+    priority: 10
+  - id: allow-git-fetch
+    tool: terminal
+    pattern: "git\\s+fetch"
+    action: allow
+    priority: 10
+  - id: allow-git-pull
+    tool: terminal
+    pattern: "git\\s+pull"
+    action: allow
+    priority: 10
+  - id: allow-git-clone
+    tool: terminal
+    pattern: "git\\s+clone"
+    action: allow
+    priority: 10
+  - id: allow-git-add
+    tool: terminal
+    pattern: "git\\s+add"
+    action: allow
+    priority: 10
+  - id: allow-git-commit
+    tool: terminal
+    pattern: "git\\s+commit"
+    action: allow
+    priority: 10
+  - id: allow-git-merge
+    tool: terminal
+    pattern: "git\\s+merge"
+    action: allow
+    priority: 10
+  - id: allow-git-rebase
+    tool: terminal
+    pattern: "git\\s+rebase"
+    action: allow
+    priority: 10
+  - id: allow-git-tag
+    tool: terminal
+    pattern: "git\\s+tag"
+    action: allow
+    priority: 10
+  - id: allow-git-stash
+    tool: terminal
+    pattern: "git\\s+stash"
+    action: allow
+    priority: 10
+  - id: allow-git-remote
+    tool: terminal
+    pattern: "git\\s+remote"
+    action: allow
+    priority: 10
+  - id: allow-git-show
+    tool: terminal
+    pattern: "git\\s+show"
+    action: allow
+    priority: 10
+  - id: allow-git-revert
+    tool: terminal
+    pattern: "git\\s+revert"
+    action: allow
+    priority: 10
+  - id: allow-git-reset
+    tool: terminal
+    pattern: "git\\s+reset"
+    action: allow
+    priority: 10
+  - id: allow-git-clean
+    tool: terminal
+    pattern: "git\\s+clean"
+    action: allow
+    priority: 10
+  - id: allow-git-archive
+    tool: terminal
+    pattern: "git\\s+archive"
+    action: allow
+    priority: 10
+  - id: allow-git-bisect
+    tool: terminal
+    pattern: "git\\s+bisect"
+    action: allow
+    priority: 10
+  - id: allow-git-cherry-pick
+    tool: terminal
+    pattern: "git\\s+cherry-pick"
+    action: allow
+    priority: 10
+  - id: allow-git-filter-branch
+    tool: terminal
+    pattern: "git\\s+filter-branch"
+    action: allow
+    priority: 10
+  - id: allow-git-submodule
+    tool: terminal
+    pattern: "git\\s+submodule"
+    action: allow
+    priority: 10
+  - id: allow-git-reflog
+    tool: terminal
+    pattern: "git\\s+reflog"
+    action: allow
+    priority: 10
+
   # Default allow for read operations
   - id: allow-read
     tool: read_file

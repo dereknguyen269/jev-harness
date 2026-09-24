@@ -1,5 +1,6 @@
 .env
-guard
-harness
+/guard
+/jev-guard
+/harness
 *.test.json
 *.log

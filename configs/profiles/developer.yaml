@@ -1,0 +1,37 @@
+# Developer profile: permissive for daily work.
+policies:
+  - id: root-delete
+    match:
+      tool: terminal
+      command:
+        regex: 'rm\s+-rf\s+/'
+    decision:
+      action: block
+      risk: 1.0
+      reason_code: CRITICAL_DELETE
+  - id: sudo
+    match:
+      tool: terminal
+      command:
+        regex: '\bsudo\b'
+    decision:
+      action: approval_required
+      risk: 0.8
+      reason_code: PRIVILEGED
+  - id: production
+    match:
+      context:
+        environment: production
+    decision:
+      action: approval_required
+      risk: 0.9
+      reason_code: PROD_MUTATION
+  - id: git-read
+    match:
+      tool: terminal
+      command:
+        regex: '^git\s+(status|diff|log)'
+    decision:
+      action: allow
+      risk: 0.05
+      reason_code: READ

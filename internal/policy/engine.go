@@ -331,7 +331,7 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 func Normalize(tool string, args map[string]any) ToolAction {
 	ta := ToolAction{Tool: tool}
 	switch tool {
-	case "terminal", "bash", "execute_bash", "executeBash":
+	case "terminal", "bash", "Bash", "execute", "shell", "execute_bash", "executeBash":
 		ta.Tool = "terminal"
 		ta.Operation = "execute"
 		if c := firstString(args, "command", "cmd", "commandLine"); c != "" {
@@ -341,7 +341,7 @@ func Normalize(tool string, args map[string]any) ToolAction {
 		if w, ok := args["workdir"].(string); ok {
 			ta.Resource = w
 		}
-	case "write_file", "write", "fs_write", "fs_append", "str_replace":
+	case "write_file", "write", "Write", "Edit", "edit", "apply_patch", "fs_write", "fs_append", "str_replace":
 		ta.Tool = "write_file"
 		ta.Operation = "write"
 		if p := firstString(args, "path", "file", "file_path", "filePath", "filename"); p != "" {
@@ -381,11 +381,13 @@ func Normalize(tool string, args map[string]any) ToolAction {
 			ta.Path = p
 			ta.Resource = p
 		}
-	case "read_file", "read":
+	case "read_file", "read", "Read", "cat":
+		ta.Tool = "read_file"
 		ta.Operation = "read"
-		if p, ok := args["path"].(string); ok {
+		if p := firstString(args, "path", "file", "file_path", "filePath", "filename"); p != "" {
 			ta.Path = p
 			ta.Resource = p
+			ta.Sensitive = isSensitivePath(p)
 		}
 	case "browser_navigate", "browser":
 		ta.Operation = "navigate"
@@ -403,15 +405,29 @@ func Normalize(tool string, args map[string]any) ToolAction {
 		}
 	default:
 		ta.Operation = "unknown"
-		for k, v := range args {
-			if k == "command" {
-				ta.Command = fmt.Sprint(v)
-			} else if k == "path" {
-				ta.Path = fmt.Sprint(v)
-			} else if k == "url" {
-				ta.URL = fmt.Sprint(v)
+		if c := firstString(args, "command", "cmd", "commandLine"); c != "" {
+			ta.Command = c
+		}
+		if p := firstString(args, "path", "file", "file_path", "filePath", "filename"); p != "" {
+			ta.Path = p
+		}
+		if u, ok := args["url"].(string); ok && u != "" {
+			ta.URL = u
+		}
+		// Resource prefers command > path > url so rule matching is
+		// deterministic regardless of Go map iteration order.
+		switch {
+		case ta.Command != "":
+			ta.Resource = ta.Command
+		case ta.Path != "":
+			ta.Resource = ta.Path
+		case ta.URL != "":
+			ta.Resource = ta.URL
+		default:
+			for _, v := range args {
+				ta.Resource = fmt.Sprint(v)
+				break
 			}
-			ta.Resource = fmt.Sprint(v)
 		}
 	}
 	return ta
