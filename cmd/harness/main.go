@@ -150,6 +150,7 @@ func loadEnv(path string) {
 
 func main() {
 	loadEnv(".env")
+	log.Printf("WARNING: cmd/harness is deprecated, use cmd/jev-guard (binary jev-guard) — v1 API still served for compat")
 
 	listen := flag.String("listen", "127.0.0.1:8787", "HTTP listen address")
 	policyPath := flag.String("policy", "configs/policy.yaml", "Path to policy file")

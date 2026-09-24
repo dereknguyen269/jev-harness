@@ -1,0 +1,37 @@
+- name: safe_git_status
+  tool: terminal
+  command: git status
+  expected: allow
+- name: safe_git_diff
+  tool: terminal
+  command: git diff HEAD
+  expected: allow
+- name: safe_ls
+  tool: terminal
+  command: ls -la
+  expected: allow
+- name: root_delete
+  tool: terminal
+  command: rm -rf /
+  expected: block
+- name: root_delete_claude
+  tool: Bash
+  command: rm -rf /
+  expected: block
+- name: root_delete_codex
+  tool: shell
+  command: rm -rf /
+  expected: block
+- name: sudo_restart
+  tool: terminal
+  command: sudo systemctl restart nginx
+  expected: approval_required
+- name: force_push
+  tool: terminal
+  command: git push --force origin main
+  expected: approval_required
+- name: env_write
+  tool: fs_write
+  command: ""
+  path: /home/user/.env
+  expected: approval_required
