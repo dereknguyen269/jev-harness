@@ -10,9 +10,7 @@ import (
 
 func v2TestConfig() *V2Config {
 	return &V2Config{Policies: []V2Rule{
-		{ID: "production", Match: V2Match{Context: struct {
-			Environment string `yaml:"environment"`
-		}{Environment: "production"}},
+		{ID: "production", Match: V2Match{Context: V2Context{Environment: "production"}},
 			Decision: V2Decision{Action: "approval_required", Risk: 0.9}},
 		{ID: "git-read", Match: V2Match{Tool: "terminal", Command: struct {
 			Regex string `yaml:"regex"`

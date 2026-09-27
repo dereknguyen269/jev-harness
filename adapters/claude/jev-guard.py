@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook → Jev Guard /v2/check (thin shim, stdlib only).
+"""Claude Code PreToolUse hook → Jev Guard /v1/check (thin shim, stdlib only).
 
 Install: add to .claude/settings.json hooks PreToolUse.
-Reads stdin JSON {tool_name, tool_input}, POSTs /v2/check.
+Reads stdin JSON {tool_name, tool_input}, POSTs /v1/check.
 Exit 0 allow; exit 2 block; stdout JSON with permissionDecision=ask for approval.
 """
 import json
@@ -27,7 +27,7 @@ def main():
         "context": {"workspace": os.getcwd()},
     }).encode()
     try:
-        req = urllib.request.Request(GUARD_URL + "/v2/check", data=body,
+        req = urllib.request.Request(GUARD_URL + "/v1/check", data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
             decision = json.loads(res.read().decode() or "{}")

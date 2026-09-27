@@ -84,8 +84,8 @@ func TestEngine_DeterministicAllowsGitStatus(t *testing.T) {
 	if resp.Confidence != 1.0 {
 		t.Errorf("expected confidence 1.0, got %f", resp.Confidence)
 	}
-	if resp.Policy.RuleID != "allow-git-status" {
-		t.Errorf("expected rule allow-git-status, got %s", resp.Policy.RuleID)
+	if resp.Policy.RuleID != "git-read" {
+		t.Errorf("expected rule git-read, got %s", resp.Policy.RuleID)
 	}
 }
 
@@ -233,6 +233,60 @@ func TestNormalize_BrowserNavigatesNetwork(t *testing.T) {
 	}
 	if ta.URL != "https://example.com" {
 		t.Errorf("expected url=https://example.com, got %s", ta.URL)
+	}
+}
+
+func TestLoad_DefaultGroupsAndCategories(t *testing.T) {
+	pc := loadPolicy(t)
+	if len(pc.Groups) != 8 {
+		t.Errorf("expected 8 default groups, got %d", len(pc.Groups))
+	}
+	byID := map[string]Rule{}
+	for _, r := range pc.Rules {
+		byID[r.ID] = r
+		if r.Category == "" {
+			t.Errorf("rule %q missing category tag", r.ID)
+		}
+	}
+	for _, id := range []string{"git-read", "git-branch-workflow", "git-sync"} {
+		if _, ok := byID[id]; !ok {
+			t.Errorf("expected consolidated rule %q", id)
+		}
+	}
+	for id := range byID {
+		if len(id) > len("allow-git-") && id[:len("allow-git-")] == "allow-git-" &&
+			id != "allow-git-clean" && id != "allow-git-filter-branch" && id != "allow-go" {
+			t.Errorf("stale per-subcommand rule %q should be consolidated", id)
+		}
+	}
+}
+
+func TestEngine_ConsolidatedGitDecisions(t *testing.T) {
+	pc := loadPolicy(t)
+	eng := NewEngine(pc, nil, NewCache(5*time.Minute))
+	cases := []struct {
+		command string
+		decision Decision
+		ruleID  string
+	}{
+		{"git fetch origin", Allow, "git-sync"},
+		{"git checkout -b feature/x", Allow, "git-branch-workflow"},
+		{"git stash list", Allow, "git-branch-workflow"},
+		{"git clean -fdx", ApprovalRequired, "allow-git-clean"},
+		{"git reset --hard HEAD", ApprovalRequired, "git-reset-hard"},
+		{"git push --force origin main", ApprovalRequired, "force-push"},
+	}
+	for _, c := range cases {
+		ta := Normalize("terminal", map[string]any{"command": c.command})
+		dr, ok := eng.Check(ta)
+		if !ok {
+			t.Errorf("%q: no rule matched", c.command)
+			continue
+		}
+		if dr.Decision != c.decision || dr.Policy.RuleID != c.ruleID {
+			t.Errorf("%q: got %s/%s want %s/%s", c.command,
+				dr.Decision, dr.Policy.RuleID, c.decision, c.ruleID)
+		}
 	}
 }
 

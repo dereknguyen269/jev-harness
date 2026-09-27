@@ -3,6 +3,7 @@ package judge
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/dereknguyen269/jev-harness/internal/jev"
 	"github.com/dereknguyen269/jev-harness/internal/policy"
@@ -19,6 +20,15 @@ func NewJev(c policy.JevClient) *Jev { return &Jev{client: c} }
 
 func NewJevFromClient(apiKey, endpoint, model string) *Jev {
 	return &Jev{client: jev.NewClient(apiKey, endpoint, model, "")}
+}
+
+// Calls returns recent underlying AI API calls (newest first), or nil when
+// the wrapped client doesn't track them.
+func (j *Jev) Calls() []jev.Call {
+	if c, ok := j.client.(interface{ Calls(int) []jev.Call }); ok && c != nil {
+		return c.Calls(200)
+	}
+	return nil
 }
 
 func (j *Jev) Evaluate(ctx context.Context, req JudgeRequest) (JudgeResult, error) {
@@ -69,9 +79,22 @@ func (j *Jev) Evaluate(ctx context.Context, req JudgeRequest) (JudgeResult, erro
 	}
 	risk := 0.5
 	if riskAns.Score != nil {
-		risk = *riskAns.Score / 5.0
+		// The API returns score as a 0-based index into the criteria
+		// list (0..4 for our 5 levels) — normalize by the max index.
+		risk = *riskAns.Score / 4.0
+		if risk < 0 {
+			risk = 0
+		}
+		if risk > 1 {
+			risk = 1
+		}
 	}
 	conf := allowAns.Confidence
+	if conf == 0 && allowAns.Noul != nil {
+		// Noul answers carry no confidence field; derive it from the
+		// distance to the decision boundary (0.5).
+		conf = math.Abs(*allowAns.Noul-0.5) * 2
+	}
 	if riskAns.Confidence > conf {
 		conf = riskAns.Confidence
 	}

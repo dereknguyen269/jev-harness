@@ -1,267 +1,375 @@
+# Jev Guard default policy.
+#
+# Evaluation: first match wins in FILE ORDER below (the `priority` field is
+# parsed but ignored — keep rules ordered blocks → approvals → allows).
+# Run `jev-guard policy test` after editing.
+#
+# Group filtering: `jev-guard serve --group secrets,code-allow` or
+# POLICY_GROUPS="..." evaluates only those groups (ungrouped rules always
+# stay active). Groups are the primary bucket; category/business/task are
+# optional scopes — a rule with `category: secrets` only matches requests
+# carrying `context.category: secrets`, and a rule with `business: payments`
+# only matches `context.business: payments` (same for task).
+#
+# Categories (4 values used across this file; no header — the store derives
+# them from rule tags on first seed, see Store.SeedCategories):
+#   safety       — irreversible / privileged operations
+#   secrets      — credential and key material
+#   productivity — everyday dev reads/writes
+#   network      — external network access
+#
+# Directory policies supported: `--policy configs/policies/` merges *.yaml.
+# Adopting new defaults on an existing DB: `jev-guard policy reseed`
+# (merge keeps custom rules; stale yaml defaults are pruned).
+groups:
+  - name: critical-safety
+    description: Irreversible destructive commands (always block)
+  - name: privileged-ops
+    description: Elevated or production-affecting operations (ask)
+  - name: secrets
+    description: Credential and secret file writes (ask)
+  - name: code-allow
+    description: Everyday programming file edits (allow)
+  - name: patch-allow
+    description: Patch tool on programming files (allow)
+  - name: browser
+    description: External network reads (ask)
+  - name: git
+    description: Safe git workflows (allow)
+  - name: system-read
+    description: Read-only inspection (allow)
 rules:
-  # Terminal rules
+  # ── Terminal: critical-safety (block, category safety) ──
   - id: root-delete
     tool: terminal
+    group: critical-safety
+    category: safety
     pattern: "rm\\s+-rf\\s+/"
     action: block
     priority: 100
-  - id: force-push
-    tool: terminal
-    pattern: "git\\s+push\\s+--force"
-    action: approval_required
-    priority: 90
-  - id: docker-production
-    tool: terminal
-    pattern: "docker\\s+(rm|rmi|kill|stop|system\\s+prune).*production"
-    action: approval_required
-    priority: 90
-  - id: sudo-command
-    tool: terminal
-    pattern: "sudo\\s+"
-    action: approval_required
-    priority: 85
-  - id: systemctl-stop
-    tool: terminal
-    pattern: "systemctl\\s+(stop|disable|restart|kill)"
-    action: approval_required
-    priority: 85
-  - id: kubectl-delete
-    tool: terminal
-    pattern: "kubectl\\s+delete"
-    action: approval_required
-    priority: 85
-  - id: git-reset-hard
-    tool: terminal
-    pattern: "git\\s+reset\\s+--hard"
-    action: approval_required
-    priority: 80
+    description: "Irreversible root delete"
   - id: mkfs-command
     tool: terminal
+    group: critical-safety
+    category: safety
     pattern: "mkfs"
     action: block
     priority: 100
+    description: "Filesystem format"
   - id: dd-command
     tool: terminal
+    group: critical-safety
+    category: safety
     pattern: "dd\\s+if="
     action: block
     priority: 100
+    description: "Raw disk write"
   - id: chmod-777-root
     tool: terminal
+    group: critical-safety
+    category: safety
     pattern: "chmod\\s+777\\s+/"
     action: block
     priority: 100
+    description: "Root permissions blowout"
   - id: chown-root
     tool: terminal
+    group: critical-safety
+    category: safety
     pattern: "chown\\s+-R\\s+root\\s+/"
     action: block
     priority: 100
+    description: "Root ownership takeover"
 
-  # File write rules
+  # ── Terminal: privileged-ops (approval, category safety) ──
+  # Dangerous git lives here (not in `git`) so --group filtering and
+  # file order both keep approvals ahead of the `git` allow rules below.
+  - id: sudo-command
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "sudo\\s+"
+    action: approval_required
+    priority: 85
+    description: "Elevated privileges"
+  - id: systemctl-stop
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "systemctl\\s+(stop|disable|restart|kill)"
+    action: approval_required
+    priority: 85
+    description: "Service lifecycle change"
+  - id: kubectl-delete
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "kubectl\\s+delete"
+    action: approval_required
+    priority: 85
+    description: "Kubernetes deletion"
+  - id: docker-production
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "docker\\s+(rm|rmi|kill|stop|system\\s+prune).*production"
+    action: approval_required
+    priority: 90
+    description: "Production container operation"
+  - id: force-push
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "git\\s+push\\s+--force"
+    action: approval_required
+    priority: 90
+    description: "History-rewriting push"
+  - id: git-reset-hard
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "git\\s+reset\\s+--hard"
+    action: approval_required
+    priority: 80
+    description: "Discards working tree changes"
+  - id: allow-git-clean
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "git\\s+clean\\s+.*-[a-z]*f"
+    action: approval_required
+    priority: 80
+    description: "Permanently deletes untracked files (moved from git allow)"
+  - id: allow-git-filter-branch
+    tool: terminal
+    group: privileged-ops
+    category: safety
+    pattern: "git\\s+filter-branch"
+    action: approval_required
+    priority: 80
+    description: "Rewrites published history (moved from git allow)"
+
+  # ── File/patch: secrets (approval, category secrets) ──
   - id: env-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "\\.env"
     action: approval_required
     priority: 95
+    description: "Environment secret file"
   - id: ssh-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "\\.ssh/"
     action: approval_required
     priority: 95
+    description: "SSH configuration"
   - id: aws-config-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "\\.aws/"
     action: approval_required
     priority: 90
+    description: "Cloud credentials"
   - id: pem-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "\\.pem$"
     action: approval_required
     priority: 95
+    description: "TLS private key"
   - id: key-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "\\.key$"
     action: approval_required
     priority: 95
+    description: "Private key file"
   - id: id-rsa-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "id_rsa"
     action: approval_required
     priority: 95
+    description: "RSA private key"
   - id: id-ed25519-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "id_ed25519"
     action: approval_required
     priority: 95
+    description: "Ed25519 private key"
   - id: authorized-keys-write
     tool: write_file
+    group: secrets
+    category: secrets
     pattern: "authorized_keys"
     action: approval_required
     priority: 95
-
-  # Patch rules
+    description: "SSH access grant"
   - id: patch-env
     tool: patch
+    group: secrets
+    category: secrets
     pattern: "\\.env"
     action: approval_required
     priority: 95
+    description: "Environment secret patch"
   - id: patch-ssh
     tool: patch
+    group: secrets
+    category: secrets
     pattern: "\\.ssh/"
     action: approval_required
     priority: 95
+    description: "SSH config patch"
 
-  # Browser rules
+  # ── Network: browser (approval, category network) ──
+  - id: allow-all-web-reads
+    tool: "*"
+    group: browser
+    pattern: "^https?://"
+    action: allow
+    priority: 10
+    description: "Allow all outbound web reads/fetches (any tool, URL targets only)"
   - id: browser-external-navigate
     tool: browser_navigate
-    pattern: "http"
+    group: browser
+    category: network
+    pattern: "^https?://"
     action: approval_required
     priority: 50
+    description: "External navigation"
   - id: browser-extract
     tool: browser_extract
-    pattern: "http"
+    group: browser
+    category: network
+    pattern: "^https?://"
     action: approval_required
     priority: 50
+    description: "External content extraction"
 
-  # Git rules
-  - id: allow-git-branch
+  # ── Everyday allows (category productivity) ──
+  # File write rules ─ group: code-allow
+  - id: markdown-write
+    tool: write_file
+    group: code-allow
+    category: productivity
+    pattern: "(?i)\\.(md|markdown)$"
+    action: allow
+    priority: 15
+    description: "Docs edit"
+  - id: code-write
+    tool: write_file
+    group: code-allow
+    category: productivity
+    pattern: "(?i)\\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|html|htm|css|scss|sass|less|svg|py|pyi|go|c|h|cpp|hpp|hh|cc|cxx|m|mm|swift|kt|kts|scala|rb|php|lua|pl|pm|r|dart|vue|svelte|astro|graphql|gql|proto|tf|tfvars|ex|exs|erl|hrl|hs|clj|cljs|elm|ps1|psm1|bat|cmd|fish|nu|v|zig|sol|move|rs|java|cs|fs|vb|json|yaml|yml|toml|xml|sql|sh|bash|zsh|cmake|gradle|mk)$"
+    action: allow
+    priority: 15
+    description: "Source/config edit"
+  - id: code-filenames-write
+    tool: write_file
+    group: code-allow
+    category: productivity
+    pattern: "(?i)(^|/)(Dockerfile(\\..*)?|Containerfile(\\..*)?|Makefile(\\..*)?|Jenkinsfile(\\..*)?|go\\.mod|go\\.sum|Cargo\\.toml|Cargo\\.lock|package\\.json|tsconfig(\\..*)?\\.json)$"
+    action: allow
+    priority: 15
+    description: "Build manifest edit"
+  - id: allow-go
     tool: terminal
-    pattern: "git\\s+branch"
+    group: code-allow
+    category: productivity
+    pattern: "^go\\s+(build|test|vet|fmt|run|mod|list|version)\\b"
     action: allow
     priority: 10
-  - id: allow-git-checkout
-    tool: terminal
-    pattern: "git\\s+checkout"
-    action: allow
-    priority: 10
-  - id: allow-git-fetch
-    tool: terminal
-    pattern: "git\\s+fetch"
-    action: allow
-    priority: 10
-  - id: allow-git-pull
-    tool: terminal
-    pattern: "git\\s+pull"
-    action: allow
-    priority: 10
-  - id: allow-git-clone
-    tool: terminal
-    pattern: "git\\s+clone"
-    action: allow
-    priority: 10
-  - id: allow-git-add
-    tool: terminal
-    pattern: "git\\s+add"
-    action: allow
-    priority: 10
-  - id: allow-git-commit
-    tool: terminal
-    pattern: "git\\s+commit"
-    action: allow
-    priority: 10
-  - id: allow-git-merge
-    tool: terminal
-    pattern: "git\\s+merge"
-    action: allow
-    priority: 10
-  - id: allow-git-rebase
-    tool: terminal
-    pattern: "git\\s+rebase"
-    action: allow
-    priority: 10
-  - id: allow-git-tag
-    tool: terminal
-    pattern: "git\\s+tag"
-    action: allow
-    priority: 10
-  - id: allow-git-stash
-    tool: terminal
-    pattern: "git\\s+stash"
-    action: allow
-    priority: 10
-  - id: allow-git-remote
-    tool: terminal
-    pattern: "git\\s+remote"
-    action: allow
-    priority: 10
-  - id: allow-git-show
-    tool: terminal
-    pattern: "git\\s+show"
-    action: allow
-    priority: 10
-  - id: allow-git-revert
-    tool: terminal
-    pattern: "git\\s+revert"
-    action: allow
-    priority: 10
-  - id: allow-git-reset
-    tool: terminal
-    pattern: "git\\s+reset"
-    action: allow
-    priority: 10
-  - id: allow-git-clean
-    tool: terminal
-    pattern: "git\\s+clean"
-    action: allow
-    priority: 10
-  - id: allow-git-archive
-    tool: terminal
-    pattern: "git\\s+archive"
-    action: allow
-    priority: 10
-  - id: allow-git-bisect
-    tool: terminal
-    pattern: "git\\s+bisect"
-    action: allow
-    priority: 10
-  - id: allow-git-cherry-pick
-    tool: terminal
-    pattern: "git\\s+cherry-pick"
-    action: allow
-    priority: 10
-  - id: allow-git-filter-branch
-    tool: terminal
-    pattern: "git\\s+filter-branch"
-    action: allow
-    priority: 10
-  - id: allow-git-submodule
-    tool: terminal
-    pattern: "git\\s+submodule"
-    action: allow
-    priority: 10
-  - id: allow-git-reflog
-    tool: terminal
-    pattern: "git\\s+reflog"
-    action: allow
-    priority: 10
+    description: "Everyday Go toolchain (read-only-ish subcommands)"
 
-  # Default allow for read operations
+  # Patch rules ─ group: patch-allow
+  - id: markdown-patch
+    tool: patch
+    group: patch-allow
+    category: productivity
+    pattern: "(?i)\\.(md|markdown)$"
+    action: allow
+    priority: 15
+    description: "Docs patch"
+  - id: code-patch
+    tool: patch
+    group: patch-allow
+    category: productivity
+    pattern: "(?i)\\.(ts|tsx|mts|cts|js|jsx|mjs|cjs|html|htm|css|scss|sass|less|svg|py|pyi|go|c|h|cpp|hpp|hh|cc|cxx|m|mm|swift|kt|kts|scala|rb|php|lua|pl|pm|r|dart|vue|svelte|astro|graphql|gql|proto|tf|tfvars|ex|exs|erl|hrl|hs|clj|cljs|elm|ps1|psm1|bat|cmd|fish|nu|v|zig|sol|move|rs|java|cs|fs|vb|json|yaml|yml|toml|xml|sql|sh|bash|zsh|cmake|gradle|mk)$"
+    action: allow
+    priority: 15
+    description: "Source/config patch"
+  - id: code-filenames-patch
+    tool: patch
+    group: patch-allow
+    category: productivity
+    pattern: "(?i)(^|/)(Dockerfile(\\..*)?|Containerfile(\\..*)?|Makefile(\\..*)?|Jenkinsfile(\\..*)?|go\\.mod|go\\.sum|Cargo\\.toml|Cargo\\.lock|package\\.json|tsconfig(\\..*)?\\.json)$"
+    action: allow
+    priority: 15
+    description: "Build manifest patch"
+
+  # Git rules ─ group: git (3 consolidated; replaces the 23 per-subcommand
+  # allow-git-* rules: status/log/diff/show/branch/remote/reflog → git-read;
+  # checkout/merge/rebase/tag/stash/cherry-pick/revert/bisect/submodule/archive
+  # → git-branch-workflow; fetch/pull/clone/add/commit → git-sync.
+  # Destructive git (force-push, reset --hard, clean -f, filter-branch) lives
+  # in privileged-ops above and wins by file order.)
+  - id: git-read
+    tool: terminal
+    group: git
+    category: productivity
+    pattern: "^git\\s+(status|log|diff|show|branch|remote|reflog|blame)(\\s|$)"
+    action: allow
+    priority: 10
+    description: "Read-only git inspection"
+  - id: git-branch-workflow
+    tool: terminal
+    group: git
+    category: productivity
+    pattern: "^git\\s+(checkout|merge|rebase|tag|stash|cherry-pick|revert|bisect|submodule|archive)(\\s|$)"
+    action: allow
+    priority: 10
+    description: "Local branch workflows"
+  - id: git-sync
+    tool: terminal
+    group: git
+    category: productivity
+    pattern: "^git\\s+(fetch|pull|clone|add|commit)(\\s|$)"
+    action: allow
+    priority: 10
+    description: "Safe local sync and staging"
+
+  # Default allow for read operations ─ group: system-read
   - id: allow-read
     tool: read_file
+    group: system-read
+    category: productivity
     pattern: ".*"
     action: allow
     priority: 10
-  - id: allow-git-status
-    tool: terminal
-    pattern: "git\\s+status"
-    action: allow
-    priority: 10
-  - id: allow-git-log
-    tool: terminal
-    pattern: "git\\s+log"
-    action: allow
-    priority: 10
-  - id: allow-git-diff
-    tool: terminal
-    pattern: "git\\s+diff"
-    action: allow
-    priority: 10
+    description: "File reads are safe"
   - id: allow-pwd
     tool: terminal
+    group: system-read
+    category: productivity
     pattern: "^pwd$"
     action: allow
     priority: 10
+    description: "Print working directory"
   - id: allow-ls
     tool: terminal
-    pattern: "^ls"
+    group: system-read
+    category: productivity
+    pattern: "^ls\\b"
     action: allow
     priority: 10
+    description: "List directory"

@@ -103,13 +103,13 @@ def guard_url_and_timeout(flags):
 def call_guard(tool, args, payload, url, timeout):
     body = json.dumps(
         {
-            "tool": tool,
-            "args": args,
+            "agent": {"name": "kiro"},
+            "tool": {"name": tool, "args": args},
             "context": {
                 "user_request": str(pick(payload, ("user_request", "prompt"), "")),
                 "working_dir": str(pick(payload, DIR_KEYS, os.getcwd())),
+                "workspace": str(pick(payload, DIR_KEYS, os.getcwd())),
                 "platform": "kiro",
-                "agent": "kiro",
             },
         }
     ).encode("utf-8")
@@ -147,7 +147,7 @@ def as_float(value, default=0.0):
 def describe(decision, reason, tool):
     risk = decision.get("risk")
     conf = decision.get("confidence")
-    rule = (decision.get("policy") or {}).get("rule_id")
+    rule = decision.get("policy_id")
     bits = ["%s on %s" % (reason, tool)]
     if risk is not None:
         bits.append("risk %.2f" % as_float(risk))
@@ -178,12 +178,12 @@ def main(argv=None):
     reason = decision.get("reason") or "risk detected"
     if verdict in ("approval_required", "ask") or decision.get("request_approval"):
         ask(reason)
-    if verdict == "block" or decision.get("allow") is False:
+    if verdict == "block":
         risk = as_float(decision.get("risk"), 1.0)
         if BLOCK_MODE == "ask" and risk < HARD_BLOCK_RISK:
             ask(describe(decision, reason, tool))
         block(describe(decision, reason, tool))
-    if verdict == "allow" or decision.get("allow") is True:
+    if verdict == "allow":
         sys.exit(ALLOW)
     if BLOCK_MODE == "ask":
         ask("unrecognized guard decision %r on %s" % (verdict, tool))

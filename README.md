@@ -2,7 +2,8 @@
 
 A local safety gateway for AI coding agents. Every tool call goes through
 `jev-guard`, which normalizes it, applies deterministic policy, consults Jev
-for ambiguous cases, and **fails closed** when Jev is unreachable.
+for ambiguous cases, and **fails closed** when Jev is unreachable. A React
+dashboard manages policy, users, approvals, and audit.
 
 > **Jev never decides.** Jev returns a structured judgment
 > (`risk`/`confidence`/`action`); the Go policy engine turns it into the
@@ -22,14 +23,17 @@ AI agent (Claude / OpenCode / Kiro / Codex / OpenClaw)
 ## Quick Start
 
 ```bash
-# Build
-go build -o jev-guard ./cmd/jev-guard
+# Build everything (frontend + binary; needs Node 20+ and Go 1.23+)
+make build
 
 # Run (default profile, policy-only until a Jev key is set)
 ./jev-guard serve --listen 127.0.0.1:8787
 
+# Dashboard
+open http://127.0.0.1:8787/
+
 # Health
-curl http://127.0.0.1:8787/v2/health
+curl http://127.0.0.1:8787/v1/health
 
 # One-shot check (exit 0 allow / 2 block / 3 approval_required)
 ./jev-guard check --tool terminal --command "git status"
@@ -42,24 +46,63 @@ With a Jev key (`.env` is auto-loaded, or pass flags):
 JEV_API_KEY=... ./jev-guard serve --profile strict
 ```
 
+With dashboard auth (off by default):
+
+```bash
+./jev-guard serve --auth-token s3cret
+```
+
+## Dashboard
+
+`GET /` serves the embedded React + shadcn/ui dashboard (built by
+`make ui-build` into `internal/server/web/dist/`). First run seeds the
+SQLite store (`~/.hermes/guard/jev.db`, override with `--db`/`JEV_DB`)
+from YAML; afterwards the DB is the runtime policy source and YAML backs
+the offline CLI commands. A first-run tour explains each tab.
+
+| Tab | Purpose |
+|-----|---------|
+| Rules | Policy rules (tool + regex → allow/block/approval_required). Defined tool/group/category lists with custom fallback. Edits reload the live engine. |
+| Groups | Group name + description definitions. Rules keep working if their group is deleted. |
+| Categories | Category name + description definitions (seeded from rule usage). Same delete semantics as groups. |
+| Users | Attribution-only users; each gets an API key that also works as a dashboard login. |
+| Approvals | Pending `approval_required` decisions — approve/deny (in-memory, lost on restart). |
+| Audit | Every decision with the exact command/path, risk, and rule. Filter + pagination. |
+| Jev API | Recent outbound AI calls: status, latency, input/output tokens. |
+
+Management writes validate input (bad regex/action → 400) and return 503
+in YAML-only mode (no `--db`).
+
 ## CLI
 
 | Command | Purpose |
 |---------|---------|
-| `jev-guard serve [--listen ADDR] [--policy FILE] [--profile NAME]` | Run the gateway. Policy: explicit `--policy`/`POLICY_PATH` wins, then `--profile` bundle, then `configs/policy.yaml`. |
-| `jev-guard check --tool T --command C [--path P] [--env E]` | One-shot evaluation (no audit). |
+| `jev-guard serve [--listen ADDR] [--policy FILE] [--profile NAME] [--group G] [--db PATH] [--auth-token TOKEN]` | Run the gateway. Policy: explicit `--policy`/`POLICY_PATH` wins, then `--profile` bundle, then `configs/policy.yaml`. |
+| `jev-guard check --tool T --command C [--path P] [--env E] [--business B] [--task T] [--category C]` | One-shot evaluation (no audit). |
 | `jev-guard policy test [--policy FILE]` | Run bundled fixtures against policy. |
 | `jev-guard eval <fixtures.yaml>` | Accuracy/latency report over eval fixtures. |
-| `jev-guard audit [--decision D] [--min-risk F] [--json]` | Query the audit log. |
+| `jev-guard audit [--decision D] [--min-risk F] [--json]` | Query the audit log (now includes command/path detail). |
 | `jev-guard doctor` | Readiness checklist (runtime, policy, Jev, adapters, audit). |
 | `jev-guard version` | Print version. |
 
+`make build|test|vet|fmt|run|clean`, `make check` (= ui-build + fmt + vet + test).
+`make build-go|test-go` skip the frontend (fails loudly if `web/dist/` is missing).
+
 ## HTTP API
 
-### `POST /v2/check`
+All `/v1/*`. When `--auth-token` is set, the management API requires
+`Authorization: Bearer` — either the master token (admin identity) or any
+active user's API key. The dashboard shell (`/`, `/assets/*`) stays open
+so the login screen can load; the agent surface stays open too.
+
+Roles (viewer < operator < admin): viewers read; operators also
+approve/deny approvals and reload policy; admins additionally manage
+users/rules/groups. API keys in the user list are masked for non-admins.
+Unknown roles fail closed to read-only. With no `--auth-token`, everything
+stays open (local-dev default).
 
 ```bash
-curl -X POST http://127.0.0.1:8787/v2/check \
+curl -X POST http://127.0.0.1:8787/v1/check \
   -H 'Content-Type: application/json' \
   -d '{"agent":{"name":"claude-code"},
        "tool":{"name":"Bash","args":{"command":"rm -rf /"}},
@@ -73,25 +116,35 @@ curl -X POST http://127.0.0.1:8787/v2/check \
   "confidence": 1.0,
   "source": "policy",
   "policy_id": "root-delete",
-  "reason_code": "CRITICAL_DELETE",
-  "reason": "Matched policy root-delete: rm -rf /",
+  "reason": "Blocked by rule root-delete: rm -rf /",
   "request_approval": false
 }
 ```
 
 `approval_required` responses additionally carry `approval_id` + `expires_in` (30s).
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/health`, `/v2/health` | Liveness (`status`, `version`, `jev` = Jev configured). |
-| POST | `/v2/check` | Full `DecisionResult` evaluation. |
-| GET | `/v2/approvals` | List approvals. |
-| POST | `/v2/approvals/:id/approve`, `.../deny` | Human decision. |
-| GET | `/v2/audit[?decision=&min_risk=]` | Audit events. |
-| GET | `/v2/stats` | Decision counts. |
-| GET | `/v2/policies` | Policy version. |
-| POST | `/v1/check` | **Deprecated compat** — same engine, legacy `{tool,args,context}` shape. |
-| GET | `/v1/audit` | Stub — use `GET /v2/audit`. |
+| Method | Path | Purpose | Auth |
+|--------|------|---------|------|
+| GET | `/health`, `/v1/health` | Liveness (`status`, `version`, `jev` = Jev configured). | open |
+| POST | `/v1/check` | Full `DecisionResult` evaluation. | open (agents) |
+| GET | `/v1/policies` | Policy version + groups. | open |
+| GET | `/v1/auth/status` | `{"auth": bool}` — is dashboard auth on. | open |
+| POST | `/v1/auth/login` | `{secret}` → `{name, role}` identity. | open |
+| GET | `/v1/auth/me` | Caller identity from Bearer token. | dashboard |
+| GET | `/` | Dashboard SPA. | dashboard |
+| GET | `/v1/approvals` | List approvals. | dashboard |
+| POST | `/v1/approvals/:id/approve`, `.../deny` | Human decision. | dashboard |
+| GET | `/v1/audit[?decision=]` | Audit events (with command/path/resource). | dashboard |
+| GET | `/v1/stats` | Decision counts. | dashboard |
+| GET | `/v1/rules` POST | List / create-or-replace rule. | dashboard |
+| PUT/DELETE | `/v1/rules/:id` | Update / delete rule. | dashboard |
+| GET | `/v1/groups` POST | List / create-or-replace group. | dashboard |
+| PUT/DELETE | `/v1/groups/:name` | Update / delete group. | dashboard |
+| GET | `/v1/categories` POST | List / create-or-replace category. | dashboard |
+| PUT/DELETE | `/v1/categories/:name` | Update / delete category. | dashboard |
+| GET/POST/PUT/DELETE | `/v1/users...` | User CRUD. | dashboard |
+| POST | `/v1/policy/reload` | Re-read DB into the live engine. | dashboard |
+| GET | `/v1/jev/calls[?limit=]` | Recent AI API calls (status, latency, tokens). Default 20, cap 100. | dashboard |
 
 ## Policy
 
@@ -99,27 +152,67 @@ Two formats, both file-order (first match wins):
 
 **Legacy** `configs/policy.yaml` — `{id, tool, pattern, action, priority}` (priority parsed, not used). Still fully supported.
 
-**V2** `configs/profiles/*.yaml` — match → decision with risk + reason codes:
+### Groups (categories / businesses / tasks)
+
+Every rule accepts optional grouping fields — all empty = match all:
+
+```yaml
+groups:
+  - name: secrets
+    description: Credential file writes (ask)
+  - name: code-allow
+    description: Everyday programming edits (allow)
+
+rules:
+  - id: env-write
+    tool: write_file
+    group: secrets        # primary bucket
+    category: safety      # free-form scope
+    business: payments    # only matches context.business: payments
+    task: deploy          # only matches context.task: deploy
+    pattern: "\\.env"
+    action: approval_required
+```
+
+`configs/profiles/*.yaml` supports the same fields (plus the V2 `policies:`
+match → decision shape with explicit risk + reason codes):
 
 ```yaml
 policies:
-  - id: sudo
+  - id: pay-deploy
+    group: privileged-ops
+    business: payments
     match:
       tool: terminal
-      command:
-        regex: '\bsudo\b'
-    decision:
-      action: approval_required
-      risk: 0.8
-      reason_code: PRIVILEGED
-  - id: production
-    match:
-      context:
-        environment: production
-    decision:
-      action: approval_required
-      risk: 0.9
+      command: {regex: 'deploy'}
+      context: {task: deploy}
+    decision: {action: approval_required, risk: 0.8}
 ```
+
+Request scope is carried in context:
+
+```bash
+./jev-guard check --tool terminal --command "deploy" \
+  --business payments --task deploy --category safety
+curl -X POST .../v1/check -d '{"agent":{"name":"x"},
+  "tool":{"name":"Bash","args":{"command":"deploy"}},
+  "context":{"business":"payments","task":"deploy"}}'
+```
+
+Filter to a subset of groups (CLI flag or env, comma-separated):
+
+```bash
+./jev-guard serve --group secrets,code-allow
+POLICY_GROUPS=git,system-read ./jev-guard serve
+./jev-guard check --tool terminal --command "git status" --group git
+./jev-guard policy test --group secrets
+./jev-guard eval --group git evals/fixtures/policy.yaml
+```
+
+Directory policies: `--policy configs/policies/` merges every `*.yaml`
+sorted (rules concatenate, groups de-duplicate, first match wins).
+
+`GET /v1/policies[?group=NAME]` returns `{version, groups}`.
 
 ### Profiles (`--profile`)
 
@@ -140,12 +233,12 @@ are never cached.
 
 ## Adapters
 
-Thin shims — all canonicalize the tool name and `POST /v2/check`.
+Thin shims — all canonicalize the tool name and `POST /v1/check`.
 80% of logic lives in Go.
 
 | Adapter | Status | Source |
 |---------|--------|--------|
-| OpenCode | ✅ | `plugins/opencode/jev-guard.js` (`tool.execute.before`; tries `/v2`, falls back to `/v1`) |
+| OpenCode | ✅ | `plugins/opencode/jev-guard.js` (`tool.execute.before`) |
 | Kiro CLI + IDE | ✅ | `plugins/kiro/jev-guard.py` (`PreToolUse`) |
 | Claude Code | ✅ | `adapters/claude/jev-guard.py` (`PreToolUse`) |
 | Codex | ✅ | `adapters/codex/jev-guard.py` |
@@ -167,11 +260,13 @@ Guard endpoint/timeout: `JEV_GUARD_URL` (default `http://127.0.0.1:8787`),
 `.env` in CWD is auto-loaded (supports `export` prefix, inline `#` comments):
 
 ```bash
-cp .env.example .env   # then set a key below
+cp .env.example .env   # then set values below
 JEV_API_KEY=...        # or TYPESAFE_API_KEY / OPENROUTER_API_KEY
 JEV_MODEL=typesafe-ai/jev
 JEV_ENDPOINT=https://ai-gateway.vercel.sh/v1/evaluate
 LISTEN=127.0.0.1:8787
+JEV_DB=~/.hermes/guard/jev.db
+JEV_AUTH_TOKEN=...
 ```
 
 Key priority: `--jev-api-key` flag > `JEV_API_KEY` > `TYPESAFE_API_KEY` >
@@ -183,21 +278,15 @@ Audit log: `$HOME/.hermes/guard/audit.jsonl` (or `$AUDIT_PATH`).
 ## Evals & Testing
 
 ```bash
-go test ./... -v
+make check
 ./jev-guard policy test
 ./jev-guard eval evals/fixtures/policy.yaml
 ```
 
 Fixtures (`evals/fixtures/policy.yaml`) cover safe/allow, destructive/block,
 and privileged/approval cases across agent tool-name variants (`terminal`,
-`Bash`, `shell`, `fs_write`). Current: 9/9, 100% accuracy, 0 false-allows.
-Unit tests use mocks (`mockJevClient`, `judge.Mock`) — no network needed.
-
-## Upgrading from v0.1
-
-- Binary `guard` (`cmd/harness`, `/v1/check` only) is a deprecated shim — switch to `jev-guard serve`.
-- Adapters work against both: new shims prefer `/v2/check` with `/v1` fallback.
-- `configs/policy.yaml` keeps working unchanged; adopt `configs/profiles/*` + `--profile` when ready.
+`Bash`, `shell`, `fs_write`). Unit tests use mocks (`mockJevClient`,
+`judge.Mock`) — no network needed.
 
 ## License
 

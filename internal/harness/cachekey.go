@@ -27,6 +27,12 @@ func CacheKey(n domain.NormalizedRequest) string {
 	sb.WriteString(n.Request.Context.Workspace)
 	sb.WriteString("|")
 	sb.WriteString(n.Request.Context.WorkingDir)
+	sb.WriteString("|")
+	sb.WriteString(n.Request.Context.Business)
+	sb.WriteString("|")
+	sb.WriteString(n.Request.Context.Task)
+	sb.WriteString("|")
+	sb.WriteString(n.Request.Context.Category)
 	sum := sha256.Sum256([]byte(sb.String()))
 	return hex.EncodeToString(sum[:])
 }

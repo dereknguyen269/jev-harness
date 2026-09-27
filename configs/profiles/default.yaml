@@ -1,6 +1,14 @@
 # Default profile: balanced safety.
+groups:
+  - name: critical-safety
+    description: Irreversible destructive commands (always block)
+  - name: privileged-ops
+    description: Elevated or production-affecting operations (ask)
 policies:
   - id: root-delete
+    group: critical-safety
+    category: safety
+    description: Irreversible root delete
     match:
       tool: terminal
       command:
@@ -10,6 +18,9 @@ policies:
       risk: 1.0
       reason_code: CRITICAL_DELETE
   - id: sudo
+    group: privileged-ops
+    category: safety
+    description: Elevated privileges
     match:
       tool: terminal
       command:
@@ -19,6 +30,8 @@ policies:
       risk: 0.8
       reason_code: PRIVILEGED
   - id: production
+    category: safety
+    description: Production environment mutation
     match:
       context:
         environment: production
@@ -27,6 +40,9 @@ policies:
       risk: 0.9
       reason_code: PROD_MUTATION
   - id: git-read
+    group: git
+    category: productivity
+    description: Read-only git inspection
     match:
       tool: terminal
       command:

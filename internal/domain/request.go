@@ -39,7 +39,11 @@ type ExecutionContext struct {
 	Branch      string            `json:"branch,omitempty"`
 	Files       []string          `json:"files,omitempty"`
 	Environment string            `json:"environment,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Business/task/category scope for policy grouping. Empty = match all.
+	Business string            `json:"business,omitempty"`
+	Task     string            `json:"task,omitempty"`
+	Category string            `json:"category,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
 	// Legacy compat fields mapped from v1 RequestContext.
 	UserRequest string `json:"user_request,omitempty"`
 	WorkingDir  string `json:"working_dir,omitempty"`

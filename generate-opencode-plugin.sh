@@ -73,5 +73,5 @@ echo '   "plugin": ['
 echo '     "jev-guard"'
 echo "   ]"
 echo ""
-echo "2. Start the guard service: go build -o guard ./cmd/harness && ./guard"
+echo "2. Start the guard service: go build -o jev-guard ./cmd/jev-guard && ./jev-guard serve"
 echo "3. Restart OpenCode to load the plugin"
