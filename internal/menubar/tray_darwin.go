@@ -74,8 +74,9 @@ func (a *app) onReady() {
 
 	go a.loop()
 	go func() {
-		<-dash.ClickedCh
-		_ = exec.Command("open", a.client.base+"/").Start()
+		for range dash.ClickedCh {
+			_ = exec.Command("open", a.client.base+"/").Start()
+		}
 	}()
 	go func() {
 		<-quit.ClickedCh
@@ -108,8 +109,8 @@ func (a *app) decide(id string, approve bool) {
 		return
 	}
 	if err := a.client.Decide(id, approve); err != nil {
+		// Status stays disabled (no handler); the text alone reports it.
 		a.status.SetTitle("Decision failed: " + shortErr(err))
-		a.status.Enable()
 		return
 	}
 	a.refresh()
@@ -136,7 +137,7 @@ func (a *app) refresh() {
 	}
 	for _, ap := range arrivals {
 		_ = beeep.Notify("Jev Guard — approval required",
-			fmt.Sprintf("%s: %s", ap.Tool, firstLine(ap.Reason)), "")
+			fmt.Sprintf("%s: %s", ap.Tool, oneLine(ap.Reason, 150)), "")
 	}
 	a.setIdle("", pending, len(pending))
 }
