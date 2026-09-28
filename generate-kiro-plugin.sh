@@ -57,8 +57,10 @@ chmod +x "$DEST_PY"
 render_template() {
   # python3 is required (it also validates the hook JSON below).
   command -v python3 >/dev/null 2>&1 || { echo "Error: python3 not found in PATH"; exit 1; }
+  # Backslashes are JSON-escaped so Windows paths (C:\...) stay valid JSON;
+  # on unix the replacement is a no-op.
   DEST_PY_ABS="$1" SRC="$2" OUT="$3" python3 -c \
-    "import os; s=open(os.environ['SRC']).read().replace('__GUARD_SCRIPT__', os.environ['DEST_PY_ABS']); open(os.environ['OUT'],'w').write(s)"
+    "import os; s=open(os.environ['SRC']).read().replace('__GUARD_SCRIPT__', os.environ['DEST_PY_ABS'].replace(chr(92), chr(92)*2)); open(os.environ['OUT'],'w').write(s)"
 }
 if [ -f "$DEST_HOOK" ] && [ "$FORCE" != "true" ]; then
   echo "Exists: $DEST_HOOK"

@@ -66,9 +66,10 @@ the offline CLI commands. A first-run tour explains each tab.
 | Groups | Group name + description definitions. Rules keep working if their group is deleted. |
 | Categories | Category name + description definitions (seeded from rule usage). Same delete semantics as groups. |
 | Users | Attribution-only users; each gets an API key that also works as a dashboard login. |
-| Approvals | Pending `approval_required` decisions — approve/deny (in-memory, lost on restart). |
+| Approvals | Pending `approval_required` decisions — approve/deny. Persisted to SQLite when `--db` is up (same record as the `approve|deny` CLI and the OpenCode plugin poll, so any channel unblocks the others); in-memory only in YAML-only mode. |
 | Audit | Every decision with the exact command/path, risk, and rule. Filter + pagination. |
-| Jev API | Recent outbound AI calls: status, latency, input/output tokens. |
+| Jev API | Recent outbound AI calls: status, latency, input/output tokens. SQLite-persisted when `--db` is up (survives restarts), otherwise in-memory. |
+| Settings | Default approval TTL (5s–1h, admin only; applies live, no restart). |
 
 Management writes validate input (bad regex/action → 400) and return 503
 in YAML-only mode (no `--db`).
@@ -77,9 +78,12 @@ in YAML-only mode (no `--db`).
 
 | Command | Purpose |
 |---------|---------|
-| `jev-guard serve [--listen ADDR] [--policy FILE] [--profile NAME] [--group G] [--db PATH] [--auth-token TOKEN]` | Run the gateway. Policy: explicit `--policy`/`POLICY_PATH` wins, then `--profile` bundle, then `configs/policy.yaml`. |
+| `jev-guard serve [--listen ADDR] [--policy FILE] [--profile NAME] [--group G] [--db PATH] [--auth-token TOKEN] [--approval-ttl SECS] [--reseed]` | Run the gateway. Policy: explicit `--policy`/`POLICY_PATH` wins, then `--profile` bundle, then `configs/policy.yaml`. `--reseed` merges bundled defaults into the DB on startup. |
 | `jev-guard check --tool T --command C [--path P] [--env E] [--business B] [--task T] [--category C]` | One-shot evaluation (no audit). |
 | `jev-guard policy test [--policy FILE]` | Run bundled fixtures against policy. |
+| `jev-guard policy reseed [--mode merge|replace] [--force]` | Merge restructured YAML defaults into the DB (merge keeps custom rules; replace wipes policy tables and needs `--force`). Users survive both. |
+| `jev-guard approvals [--status pending|all] [--limit N] [--json] [--db PATH]` | List approval history, newest first. Works with or without a running server (`--db` accepted anywhere in args). |
+| `jev-guard approve|deny <id-prefix> [--db PATH]` | Decide one approval by ID prefix (same SQLite record as dashboard + plugin poll). |
 | `jev-guard eval <fixtures.yaml>` | Accuracy/latency report over eval fixtures. |
 | `jev-guard audit [--decision D] [--min-risk F] [--json]` | Query the audit log (now includes command/path detail). |
 | `jev-guard doctor` | Readiness checklist (runtime, policy, Jev, adapters, audit). |
@@ -132,8 +136,11 @@ curl -X POST http://127.0.0.1:8787/v1/check \
 | POST | `/v1/auth/login` | `{secret}` → `{name, role}` identity. | open |
 | GET | `/v1/auth/me` | Caller identity from Bearer token. | dashboard |
 | GET | `/` | Dashboard SPA. | dashboard |
-| GET | `/v1/approvals` | List approvals. | dashboard |
+| GET | `/v1/approvals` | List approvals (agent poll surface). | dashboard |
+| GET | `/v1/approvals/page[?page=&per_page=]` | Paginated approval history + `pending` count for the tab badge. | dashboard |
 | POST | `/v1/approvals/:id/approve`, `.../deny` | Human decision. | dashboard |
+| GET/PUT | `/v1/settings` | Default `approval_ttl_seconds` (GET reads, PUT is admin-only, applies live). | dashboard |
+| POST | `/v1/policy/reseed` | Merge (`{"mode":"merge"}`) or wipe+replace (`{"mode":"replace","force":true}`) bundled defaults into the DB. | dashboard |
 | GET | `/v1/audit[?decision=]` | Audit events (with command/path/resource). | dashboard |
 | GET | `/v1/stats` | Decision counts. | dashboard |
 | GET | `/v1/rules` POST | List / create-or-replace rule. | dashboard |
@@ -167,12 +174,18 @@ rules:
   - id: env-write
     tool: write_file
     group: secrets        # primary bucket
-    category: safety      # free-form scope
+    category: safety      # dashboard taxonomy only — never match scope
     business: payments    # only matches context.business: payments
     task: deploy          # only matches context.task: deploy
     pattern: "\\.env"
     action: approval_required
+    approval_timeout: 120  # per-rule approval TTL in seconds (0 = default)
 ```
+
+`category` (and `group`) are dashboard taxonomy, never request scope:
+adapters send no category, so every rule matches regardless of its tag.
+`business`/`task` are genuine scopes — a rule carrying one only matches
+requests that carry the same value.
 
 `configs/profiles/*.yaml` supports the same fields (plus the V2 `policies:`
 match → decision shape with explicit risk + reason codes):
@@ -231,6 +244,15 @@ low confidence → ask, `risk ≥ 0.95` → block. Cache holds reads (30s)
 and low-risk allows (10s) only — mutations, criticals, and approvals
 are never cached.
 
+### Approval TTL
+
+`approval_required` decisions expire. Effective TTL: the matched rule's
+`approval_timeout` when positive, else the default. Default chain:
+`--approval-ttl` / `JEV_APPROVAL_TTL` seeds it, the DB `settings` row
+(`PUT /v1/settings`, dashboard Settings tab) overrides it live at
+runtime. Bounds everywhere: 5s–1h, default 30s. `approval_timeout`
+is only valid on `approval_required` rules (validated on write, 400).
+
 ## Adapters
 
 Thin shims — all canonicalize the tool name and `POST /v1/check`.
@@ -255,9 +277,20 @@ Install from source of truth with the generators (never edit installed copies):
 Guard endpoint/timeout: `JEV_GUARD_URL` (default `http://127.0.0.1:8787`),
 `JEV_GUARD_TIMEOUT_MS` (default `2000`).
 
+Approval flow: `approval_required` carries `approval_id` + `expires_in`.
+The OpenCode plugin polls `GET /v1/approvals/page` until a human decides
+via dashboard, `jev-guard approve|deny`, or the curl commands it prints —
+any channel unblocks the others. When the guard runs with `--auth-token`,
+set the same token as `JEV_AUTH_TOKEN` in the agent process env or every
+approval poll 401s and the plugin fails closed on timeout. All adapters
+fail closed on unknown verdicts or unreachable guard (Claude/Codex surface
+`ask` + the approval short-id so the human can decide out of band).
+
 ## Environment
 
-`.env` in CWD is auto-loaded (supports `export` prefix, inline `#` comments):
+`.env` is auto-loaded from the CWD **and** `~/.config/jev-guard/.env`
+(supports `export` prefix, inline `#` comments, quoted values; existing
+environment wins):
 
 ```bash
 cp .env.example .env   # then set values below
@@ -267,6 +300,7 @@ JEV_ENDPOINT=https://ai-gateway.vercel.sh/v1/evaluate
 LISTEN=127.0.0.1:8787
 JEV_DB=~/.hermes/guard/jev.db
 JEV_AUTH_TOKEN=...
+JEV_APPROVAL_TTL=30    # default approval TTL in seconds (5-3600)
 ```
 
 Key priority: `--jev-api-key` flag > `JEV_API_KEY` > `TYPESAFE_API_KEY` >

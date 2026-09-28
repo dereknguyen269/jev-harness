@@ -75,7 +75,7 @@ const STEPS: Step[] = [
           tracks what&apos;s pending.
         </p>
         <p className="text-muted-foreground">
-          Approvals live in memory and vanish on gateway restart. The list auto-refreshes every 10 seconds.
+          Approvals persist in SQLite and survive gateway restarts. The list auto-refreshes every 10 seconds.
         </p>
       </>
     ),

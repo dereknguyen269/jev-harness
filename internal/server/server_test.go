@@ -630,3 +630,140 @@ func TestUsers_KeysMaskedForNonAdmin(t *testing.T) {
 		}
 	}
 }
+
+func TestApprovals_SQLiteSurvivesRestart(t *testing.T) {
+	gw := testGateway(t)
+	dbPath := filepath.Join(t.TempDir(), "appr.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	gw.Store = s
+	appr := approval.NewStore()
+	appr.SetPersistence(s)
+	gw.Approvals = appr
+	gw.Harness.Approvals = appr
+	gw.Harness.Judge = &judge.Mock{Risk: 0.8, Confidence: 0.99, Action: "approval_required"}
+	code, body := doReq(t, gw, "POST", "/v1/check",
+		`{"agent":{"name":"t"},"tool":{"name":"terminal","args":{"command":"frobnicate-persist-probe"}},"context":{}}`)
+	if code != 200 {
+		t.Fatalf("check status=%d body=%s", code, body)
+	}
+	var res domain.DecisionResult
+	if err := json.Unmarshal(body, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision != domain.ApprovalRequired || res.ApprovalID == "" {
+		t.Fatalf("got %+v", res)
+	}
+	// Fresh process, same DB file: the approval must still be there.
+	s.Close()
+	s2, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { s2.Close() })
+	fresh := approval.NewStore()
+	fresh.SetPersistence(s2)
+	listed := fresh.List()
+	if len(listed) != 1 || listed[0].ID != res.ApprovalID {
+		t.Fatalf("list after reopen=%+v", listed)
+	}
+	if listed[0].Status != domain.ApprovalPending {
+		t.Fatalf("status=%s", listed[0].Status)
+	}
+	dec, ok := fresh.Decide(res.ApprovalID, true)
+	if !ok || dec.Status != domain.ApprovalApproved {
+		t.Fatalf("decide=%+v ok=%v", dec, ok)
+	}
+	// And the decision itself persisted.
+	got, err := s2.GetApproval(res.ApprovalID)
+	if err != nil || got.Status != domain.ApprovalApproved {
+		t.Fatalf("stored=%+v err=%v", got, err)
+	}
+}
+
+func TestApprovalsPage_ShapeAndPagination(t *testing.T) {
+	gw := testGatewayWithStore(t)
+	gw.Approvals.SetPersistence(gw.Store)
+	for i := 0; i < 5; i++ {
+		if _, err := gw.Store.CreateApproval("r", "terminal", nil, 0.1, "", time.Hour); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	code, body := doReq(t, gw, "GET", "/v1/approvals/page?page=1&per_page=2", "")
+	if code != 200 {
+		t.Fatalf("status=%d body=%s", code, body)
+	}
+	var pg ApprovalsPage
+	if err := json.Unmarshal(body, &pg); err != nil {
+		t.Fatal(err)
+	}
+	if pg.Total != 5 || pg.Page != 1 || pg.PerPage != 2 || pg.Pages != 3 || pg.Pending != 5 {
+		t.Fatalf("got %+v", pg)
+	}
+	if len(pg.Approvals) != 2 {
+		t.Fatalf("items=%d", len(pg.Approvals))
+	}
+	if pg.Approvals[0].CreatedAt.IsZero() {
+		t.Fatal("missing created_at datetime")
+	}
+	if !pg.Approvals[0].CreatedAt.After(pg.Approvals[1].CreatedAt) {
+		t.Fatal("not ordered newest-first by datetime")
+	}
+	// Page 3 holds the last row; pending drops after a decision.
+	code, body = doReq(t, gw, "GET", "/v1/approvals/page?page=3&per_page=2", "")
+	if code != 200 {
+		t.Fatalf("p3 status=%d", code)
+	}
+	var pg3 ApprovalsPage
+	if err := json.Unmarshal(body, &pg3); err != nil {
+		t.Fatal(err)
+	}
+	if len(pg3.Approvals) != 1 || pg3.Approvals[0].ID == pg.Approvals[0].ID {
+		t.Fatalf("p3=%+v", pg3.Approvals)
+	}
+	if _, ok := gw.Approvals.Decide(pg3.Approvals[0].ID, true); !ok {
+		t.Fatal("decide failed")
+	}
+	code, body = doReq(t, gw, "GET", "/v1/approvals/page?page=1&per_page=2", "")
+	var pgAfter ApprovalsPage
+	if err := json.Unmarshal(body, &pgAfter); err != nil {
+		t.Fatal(err)
+	}
+	if code != 200 || pgAfter.Pending != 4 || pgAfter.Total != 5 {
+		t.Fatalf("after decide: code=%d %+v", code, pgAfter)
+	}
+}
+
+func TestApprovalsPage_YAMLOnly(t *testing.T) {
+	gw := testGateway(t) // no store
+	gw.Approvals.Create("r", "terminal", nil, 0.1, "", time.Hour)
+	code, body := doReq(t, gw, "GET", "/v1/approvals/page", "")
+	if code != 200 {
+		t.Fatalf("status=%d body=%s", code, body)
+	}
+	var pg ApprovalsPage
+	if err := json.Unmarshal(body, &pg); err != nil {
+		t.Fatal(err)
+	}
+	if pg.Total != 1 || pg.Pending != 1 || len(pg.Approvals) != 1 {
+		t.Fatalf("got %+v", pg)
+	}
+}
+
+func TestApprovalsPage_BareArrayUnchanged(t *testing.T) {
+	// Agent polling plugins depend on the bare-array shape.
+	gw := testGateway(t)
+	gw.Approvals.Create("r", "terminal", nil, 0.1, "", time.Hour)
+	code, body := doReq(t, gw, "GET", "/v1/approvals", "")
+	if code != 200 {
+		t.Fatalf("status=%d", code)
+	}
+	var arr []domain.Approval
+	if err := json.Unmarshal(body, &arr); err != nil || len(arr) != 1 {
+		t.Fatalf("body=%s err=%v", body, err)
+	}
+}

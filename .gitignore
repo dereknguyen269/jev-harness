@@ -3,6 +3,8 @@
 /jev-guard
 /harness
 *.test.json
-*.logweb/node_modules/
+*.log
+web/node_modules/
+.opencode/skills/
 internal/server/web/dist/
 *.db

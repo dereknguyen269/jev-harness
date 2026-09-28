@@ -10,6 +10,7 @@ export interface Rule {
   task: string
   description: string
   source: string
+  approval_timeout: number
 }
 
 export type RuleInput = Omit<Rule, "source">
@@ -174,6 +175,18 @@ export const listApprovals = () => api<Approval[]>("GET", "/approvals")
 export const decideApproval = (id: string, approve: boolean) =>
   api<Approval>("POST", `/approvals/${encodeURIComponent(id)}/${approve ? "approve" : "deny"}`)
 
+export interface ApprovalsPage {
+  approvals: Approval[]
+  total: number
+  page: number
+  per_page: number
+  pages: number
+  pending: number
+}
+
+export const listApprovalsPage = (page: number, perPage: number) =>
+  api<ApprovalsPage>("GET", `/approvals/page?page=${page}&per_page=${perPage}`)
+
 export const getStats = () => api<Stats>("GET", "/stats")
 export const listAudit = (decision?: string) =>
   api<AuditEvent[]>("GET", "/audit" + (decision ? `?decision=${encodeURIComponent(decision)}` : ""))
@@ -215,3 +228,10 @@ export const saveCategory = (category: Category, isEdit: boolean) =>
     ? api<Category>("PUT", `/categories/${encodeURIComponent(category.name)}`, category)
     : api<Category>("POST", "/categories", category)
 export const deleteCategory = (name: string) => api<null>("DELETE", `/categories/${encodeURIComponent(name)}`)
+
+export interface Settings {
+  approval_ttl_seconds: number
+}
+
+export const getSettings = () => api<Settings>("GET", "/settings")
+export const saveSettings = (s: Settings) => api<Settings>("PUT", "/settings", s)

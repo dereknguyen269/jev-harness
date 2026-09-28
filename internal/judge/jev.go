@@ -22,6 +22,14 @@ func NewJevFromClient(apiKey, endpoint, model string) *Jev {
 	return &Jev{client: jev.NewClient(apiKey, endpoint, model, "")}
 }
 
+// SetCallPersistence forwards SQLite persistence to the wrapped client
+// when it supports it; other Judge implementations are untouched.
+func (j *Jev) SetCallPersistence(p jev.CallPersistence) {
+	if c, ok := j.client.(interface{ SetPersistence(jev.CallPersistence) }); ok && c != nil {
+		c.SetPersistence(p)
+	}
+}
+
 // Calls returns recent underlying AI API calls (newest first), or nil when
 // the wrapped client doesn't track them.
 func (j *Jev) Calls() []jev.Call {

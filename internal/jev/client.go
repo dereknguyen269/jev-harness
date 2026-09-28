@@ -24,6 +24,9 @@ type Client struct {
 	baseURL   string
 	provider  string
 	calls     *CallLog
+	// persist, when set, receives every logged call. Set once before
+	// serving (see SetPersistence); logCall only ever reads it.
+	persist CallPersistence
 }
 
 func NewClient(apiKey, baseURL, model, provider string) *Client {
@@ -61,6 +64,12 @@ func NewClient(apiKey, baseURL, model, provider string) *Client {
 	}
 }
 
+// SetPersistence attaches (or, with nil, detaches) the SQLite backend.
+// Callers must set it before serving; changing it mid-flight races.
+func (c *Client) SetPersistence(p CallPersistence) {
+	c.persist = p
+}
+
 // Calls returns recent API calls, newest first, up to limit (<=0 means all).
 func (c *Client) Calls(limit int) []Call {
 	if c.calls == nil {
@@ -83,7 +92,7 @@ func (c *Client) logCall(start time.Time, httpStatus int, err error, in, out int
 			msg = msg[:500] + "…"
 		}
 	}
-	c.calls.Add(Call{
+	call := Call{
 		Timestamp:    time.Now().UTC(),
 		Model:        c.model,
 		Endpoint:     c.baseURL,
@@ -93,7 +102,12 @@ func (c *Client) logCall(start time.Time, httpStatus int, err error, in, out int
 		InputTokens:  in,
 		OutputTokens: out,
 		Error:        msg,
-	})
+	}
+	c.calls.Add(call)
+	// Best-effort: call logging must never break judging.
+	if c.persist != nil {
+		_ = c.persist.InsertJevCall(call)
+	}
 }
 
 func detectModelType(model, provider string) string {

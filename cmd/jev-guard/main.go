@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -62,6 +63,10 @@ func main() {
 		}
 	case "audit":
 		cmdAudit(os.Args[2:])
+	case "approvals":
+		cmdApprovals(os.Args[2:])
+	case "approve", "deny":
+		cmdDecide(os.Args[1], os.Args[2:])
 	case "eval":
 		cmdEval(os.Args[2:])
 	case "doctor":
@@ -75,7 +80,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: jev-guard <serve|check|policy <test|reseed>|audit|eval|doctor|version>")
+	fmt.Fprintln(os.Stderr, "usage: jev-guard <serve|check|policy <test|reseed>|audit|approvals|approve <id>|deny <id>|eval|doctor|version>")
 }
 
 // loadPolicyForSeed loads the bundled policy for DB seeding: legacy rules
@@ -192,11 +197,14 @@ func cmdServe(args []string) {
 	jevModel := fs.String("jev-model", os.Getenv("JEV_MODEL"), "Jev model")
 	dbPath := fs.String("db", envOr("JEV_DB", defaultDBPath()), "SQLite path for dashboard users/rules (empty = YAML-only)")
 	authToken := fs.String("auth-token", os.Getenv("JEV_AUTH_TOKEN"), "Dashboard auth token (empty = auth disabled)")
+	approvalTTL := fs.Int("approval-ttl", envOrInt("JEV_APPROVAL_TTL", domain.DefaultApprovalTTLSeconds), "Default approval TTL in seconds (DB setting overrides at runtime)")
 	reseed := fs.Bool("reseed", false, "Merge bundled YAML defaults into the DB on startup (adopts restructures, keeps custom rules)")
 	_ = fs.Parse(args)
 
 	groups := activeGroups(*groupFlag)
 	h, legacy, approvals, jevOn := buildHarnessWithGroups(*policyPath, *profile, *jevAPIKey, *jevEndpoint, *jevModel, groups)
+	h.SetApprovalTTLSeconds(*approvalTTL)
+	log.Printf("default approval TTL: %ds", h.ApprovalTTLSeconds())
 	engV2, _ := h.Policy.(*policy.EngineV2)
 
 	// Optional SQLite store: DB rules become the runtime policy (seeded
@@ -277,12 +285,30 @@ func cmdServe(args []string) {
 		}
 	}
 
+	// Approvals persist to SQLite when the store is up; otherwise they
+	// stay in memory (YAML-only mode). The store is the source of truth
+	// across restarts, with the in-memory map as write-through fallback.
+	if st != nil {
+		approvals.SetPersistence(st)
+		log.Print("approvals persisted to SQLite store")
+		if j, ok := h.Judge.(*judge.Jev); ok && j != nil {
+			j.SetCallPersistence(st)
+			log.Print("jev calls persisted to SQLite store")
+		}
+		if secs, ok := st.GetApprovalTTLSeconds(); ok {
+			h.SetApprovalTTLSeconds(secs)
+			log.Printf("default approval TTL overridden from store: %ds", h.ApprovalTTLSeconds())
+		} else if err := st.SetSetting(store.SettingApprovalTTLSeconds, strconv.Itoa(h.ApprovalTTLSeconds())); err != nil {
+			log.Printf("warning: settings seed failed (%v)", err)
+		}
+	}
+
 	gw := &server.Gateway{
 		Harness: h, Approvals: approvals, Store: st,
 		AuditPath: audit.ResolvePath(""), Timeout: 10 * time.Second,
 		JevOn: jevOn, Version: version,
-		Groups: groupMetadata(legacy, engV2),
-		AuthToken: *authToken,
+		Groups:     groupMetadata(legacy, engV2),
+		AuthToken:  *authToken,
 		SeedPolicy: seedPC,
 	}
 	if *authToken == "" {
@@ -461,6 +487,146 @@ func cmdPolicyReseed(args []string) {
 		fmt.Fprintf(os.Stderr, "reseed: unknown --mode %q (want merge|replace)\n", *mode)
 		os.Exit(1)
 	}
+}
+
+// splitDBFlag extracts --db PATH / --db=PATH from anywhere in args.
+// The stdlib flag package stops parsing at the first positional argument,
+// so `approve <id> --db X` would otherwise silently use the default DB.
+// Returns the resolved path and the remaining args for the FlagSet.
+func splitDBFlag(args []string) (string, []string) {
+	db := envOr("JEV_DB", defaultDBPath())
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--db" && i+1 < len(args) {
+			db = args[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(a, "--db=") {
+			db = strings.TrimPrefix(a, "--db=")
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return db, rest
+}
+
+// ---- approvals (terminal approve/reject: same record as the dashboard) ----
+
+// cmdApprovals lists approval history, newest first. Reads the SQLite store
+// directly, so it works with or without a running server — the dashboard
+// buttons and these commands converge on the same approvals table.
+func cmdApprovals(args []string) {
+	dbDefault, rest := splitDBFlag(args)
+	fs := flag.NewFlagSet("approvals", flag.ExitOnError)
+	dbPath := fs.String("db", dbDefault, "SQLite path (empty = YAML-only, no persisted history)")
+	status := fs.String("status", "pending", "Filter: pending|all")
+	limit := fs.Int("limit", 20, "Max rows (<=0 means all)")
+	asJSON := fs.Bool("json", false, "JSON output")
+	_ = fs.Parse(rest)
+	if *dbPath == "" {
+		fmt.Fprintln(os.Stderr, "approvals: no DB configured (YAML-only mode keeps approvals in server memory)")
+		os.Exit(1)
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("approvals: open store: %v", err)
+	}
+	defer st.Close()
+	items, total, err := st.ListApprovalsPage(*limit, 0)
+	if err != nil {
+		log.Fatalf("approvals: list: %v", err)
+	}
+	if *status != "all" {
+		kept := items[:0]
+		for _, a := range items {
+			if a.Status == domain.ApprovalPending {
+				kept = append(kept, a)
+			}
+		}
+		items = kept
+	}
+	if *asJSON {
+		out, _ := json.MarshalIndent(items, "", "  ")
+		fmt.Println(string(out))
+		return
+	}
+	pending, err := st.PendingCount()
+	if err != nil {
+		log.Fatalf("approvals: count: %v", err)
+	}
+	fmt.Printf("%d approvals (%d pending), showing %d\n", total, pending, len(items))
+	for _, a := range items {
+		fmt.Printf("%s %-9s %-12s risk=%.2f expires=%s %s\n",
+			a.ID, a.Status, a.Tool, a.Risk,
+			a.ExpiresAt.Format(time.RFC3339), firstLine(a.Reason))
+	}
+}
+
+// cmdDecide approves or denies one approval by ID prefix (e.g. the 8 chars
+// shown by `approvals` and the dashboard). Same record the dashboard and
+// polling agent plugins read, so a terminal decision unblocks them too.
+func cmdDecide(cmd string, args []string) {
+	approve := cmd == "approve"
+	dbDefault, rest := splitDBFlag(args)
+	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+	dbPath := fs.String("db", dbDefault, "SQLite path (empty = YAML-only, nothing to decide)")
+	_ = fs.Parse(rest)
+	rest = fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintf(os.Stderr, "usage: jev-guard %s <approval-id-prefix> [--db PATH]\n", cmd)
+		os.Exit(1)
+	}
+	if *dbPath == "" {
+		fmt.Fprintln(os.Stderr, cmd+": no DB configured (YAML-only mode keeps approvals in server memory)")
+		os.Exit(1)
+	}
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		log.Fatalf("%s: open store: %v", cmd, err)
+	}
+	defer st.Close()
+	prefix := rest[0]
+	all, err := st.ListApprovals()
+	if err != nil {
+		log.Fatalf("%s: list: %v", cmd, err)
+	}
+	var match *domain.Approval
+	ambiguous := false
+	for i, a := range all {
+		if strings.HasPrefix(string(a.ID), prefix) {
+			if match != nil {
+				ambiguous = true
+				break
+			}
+			match = &all[i]
+		}
+	}
+	if match == nil {
+		fmt.Fprintf(os.Stderr, "%s: no approval starts with %q\n", cmd, prefix)
+		os.Exit(1)
+	}
+	if ambiguous {
+		fmt.Fprintf(os.Stderr, "%s: prefix %q is ambiguous, give more characters\n", cmd, prefix)
+		os.Exit(1)
+	}
+	decided, err := st.DecideApproval(match.ID, approve)
+	if err != nil {
+		log.Fatalf("%s: decide: %v", cmd, err)
+	}
+	verb := "denied"
+	if approve {
+		verb = "approved"
+	}
+	fmt.Printf("%s %s (%s): %s on %s\n", verb, decided.ID, decided.Status, decided.Tool, firstLine(decided.Reason))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // ---- audit ----
@@ -687,6 +853,15 @@ func defaultDBPath() string {
 func envOr(k, d string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return d
+}
+
+func envOrInt(k string, d int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n
+		}
 	}
 	return d
 }

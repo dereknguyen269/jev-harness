@@ -50,8 +50,10 @@ Guard unreachable: `ask` in default mode, hard `block` in
 | `JEV_GUARD_TIMEOUT_MS` | `2000` | HTTP timeout (hook wrapper passes `5000`) |
 | `JEV_GUARD_BLOCK_MODE` | `ask` | `ask` = blocks become prompts; `block` = OpenCode parity |
 | `JEV_GUARD_HARD_BLOCK_RISK` | `0.9` | Risk at/above this always hard-blocks in `ask` mode |
-| `JEV_GUARD_FAIL_OPEN` | unset | `1` = allow when guard unreachable |
+| `JEV_GUARD_FAIL_OPEN` | unset | `1` = allow when guard unreachable (**testing only** — anyone with env access can switch the gate off) |
 | `JEV_GUARD_LOG` | unset | Append raw stdin payloads (may contain secrets) |
+
+> The hook `command` uses `${VAR:-default}` shell expansions. This assumes Kiro execs the command via a shell; if it ever execs directly, the env knobs above stop applying and the script's compiled-in defaults take effect.
 
 ## Manual test
 

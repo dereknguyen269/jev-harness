@@ -19,7 +19,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog"
 import { Pager, paginate } from "@/components/pager"
 import { StatusBadge } from "@/components/status-badge"
 import { canOperateRole, escHtml, isAdminRole } from "@/lib/utils"
-import { deleteRule, listCategories, listGroups, listRules, reloadPolicy, reseedPolicy, saveRule, type Category, type Group, type Rule, type RuleInput } from "@/lib/api"
+import { deleteRule, getSettings, listCategories, listGroups, listRules, reloadPolicy, reseedPolicy, saveRule, type Category, type Group, type Rule, type RuleInput } from "@/lib/api"
 
 const BLANK: RuleInput = {
   id: "",
@@ -32,6 +32,7 @@ const BLANK: RuleInput = {
   business: "",
   task: "",
   description: "",
+  approval_timeout: 0,
 }
 
 const ACTIONS = ["allow", "block", "approval_required"]
@@ -92,10 +93,11 @@ interface RuleDialogProps {
   isEdit: boolean
   groups: Group[]
   categories: Category[]
+  defaultTtl: number
   onSaved: () => void
 }
 
-function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, onSaved }: RuleDialogProps) {
+function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, defaultTtl, onSaved }: RuleDialogProps) {
   const [form, setForm] = useState<RuleInput>(initial)
   const [step, setStep] = useState<"form" | "review">("form")
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -138,6 +140,12 @@ function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, o
     if (customGroup && !customGroupValue.trim()) e.group = "Enter a custom group name or pick from the list."
     if (customCategory && !customCategoryValue.trim())
       e.category = "Enter a custom category name or pick from the list."
+    const timeout = Number(form.approval_timeout) || 0
+    if (form.action === "approval_required") {
+      if (timeout !== 0 && (timeout < 5 || timeout > 3600)) e.approval_timeout = "Use 0 (default) or 5–3600 seconds."
+    } else if (timeout !== 0) {
+      e.approval_timeout = "Only approval_required rules use a timeout."
+    }
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -275,7 +283,10 @@ function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, o
               "Action",
               false,
               "",
-              <Select value={form.action} onValueChange={(v) => set("action", v)}>
+              <Select value={form.action} onValueChange={(v) => {
+                set("action", v)
+                if (v !== "approval_required") set("approval_timeout", 0)
+              }}>
                 <SelectTrigger id="f-action" aria-invalid={!!errors.action}>
                   <SelectValue />
                 </SelectTrigger>
@@ -288,6 +299,24 @@ function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, o
               errors.action,
             )}
             {field("f-priority", "Priority", false, "", <Input id="f-priority" type="number" value={form.priority} onChange={(e) => set("priority", Number(e.target.value) || 0)} />)}
+            {field(
+              "f-timeout",
+              "Approval timeout",
+              false,
+              form.action === "approval_required" ? `seconds, 0 = default (${defaultTtl}s)` : "only for approval_required",
+              <Input
+                id="f-timeout"
+                type="number"
+                min={0}
+                max={3600}
+                value={form.approval_timeout || ""}
+                placeholder={`default (${defaultTtl}s)`}
+                disabled={form.action !== "approval_required"}
+                aria-invalid={!!errors.approval_timeout}
+                onChange={(e) => set("approval_timeout", Number(e.target.value) || 0)}
+              />,
+              errors.approval_timeout,
+            )}
             {field(customGroup ? "f-group-custom" : "f-group", "Group", false, customGroup ? "custom value" : "blank = ungrouped", customGroup ? (
               <div className="space-y-1.5">
                 <Input
@@ -405,6 +434,9 @@ function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, o
             </p>
             <p className="rounded-md border bg-muted/50 px-3 py-2 text-sm">
               Tool <b>{effectiveTool || "*"}</b> · action <b>{form.action}</b> · priority <b>{form.priority}</b>
+              {form.action === "approval_required" && (
+                <> · timeout <b>{form.approval_timeout ? `${form.approval_timeout}s` : `default (${defaultTtl}s)`}</b></>
+              )}
               {effectiveGroup && (
                 <>
                   {" "}· group <b>{effectiveGroup}</b>
@@ -448,6 +480,7 @@ function RuleDialog({ open, onOpenChange, initial, isEdit, groups, categories, o
 
 export function RulesTab({ onCount, role }: { onCount: (db: boolean, n: number) => void; role: string }) {
   const [rules, setRules] = useState<Rule[]>([])
+  const [defaultTtl, setDefaultTtl] = useState(30)
   const [definedGroups, setDefinedGroups] = useState<Group[]>([])
   const [definedCategories, setDefinedCategories] = useState<Category[]>([])
   const [query, setQuery] = useState("")
@@ -482,6 +515,13 @@ export function RulesTab({ onCount, role }: { onCount: (db: boolean, n: number) 
   useEffect(() => {
     load()
   }, [load])
+
+  // Default approval timeout for the rule dialog hint (falls back to 30s).
+  useEffect(() => {
+    getSettings()
+      .then((s) => setDefaultTtl(s.approval_ttl_seconds))
+      .catch(() => {})
+  }, [])
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -649,6 +689,9 @@ export function RulesTab({ onCount, role }: { onCount: (db: boolean, n: number) 
                 </TableCell>
                 <TableCell>
                   <StatusBadge value={r.action} />
+                  {r.action === "approval_required" && !!r.approval_timeout && (
+                    <div className="text-xs text-muted-foreground tabular-nums">{r.approval_timeout}s timeout</div>
+                  )}
                 </TableCell>
                 <TableCell className="tabular-nums">{r.priority}</TableCell>
                 <TableCell>{r.group}</TableCell>
@@ -674,6 +717,7 @@ export function RulesTab({ onCount, role }: { onCount: (db: boolean, n: number) 
                           business: r.business,
                           task: r.task,
                           description: r.description,
+                          approval_timeout: r.approval_timeout || 0,
                         },
                         isEdit: true,
                       })
@@ -721,6 +765,7 @@ export function RulesTab({ onCount, role }: { onCount: (db: boolean, n: number) 
         isEdit={dialog.isEdit}
         groups={groups}
         categories={categories}
+        defaultTtl={defaultTtl}
         onSaved={load}
       />
 

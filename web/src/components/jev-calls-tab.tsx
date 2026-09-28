@@ -90,8 +90,8 @@ export function JevCallsTab() {
         </Table>
       </div>
       <p className="text-xs text-muted-foreground">
-        In-memory ring (last 200 calls, this view shows 20). Token counts come from the API response;
-        chat providers that omit usage report 0.
+        Persisted in SQLite (last 1,000 calls, this view shows 20) — or the in-memory ring in YAML-only mode.
+        Token counts come from the API response; chat providers that omit usage report 0.
       </p>
     </div>
   )

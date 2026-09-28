@@ -53,7 +53,39 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
+	if err := migrateRulesApprovalTimeout(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// migrateRulesApprovalTimeout adds rules.approval_timeout to databases
+// created before the column existed (fresh DBs already carry it via the
+// schema). Runs on every open; a no-op once the column is present.
+func migrateRulesApprovalTimeout(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(rules)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "approval_timeout" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE rules ADD COLUMN approval_timeout INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -191,11 +223,13 @@ type Rule struct {
 	Task        string `json:"task"`
 	Description string `json:"description"`
 	Source      string `json:"source"`
+	// ApprovalTimeout is the per-rule approval TTL in seconds (0 = default).
+	ApprovalTimeout int `json:"approval_timeout"`
 }
 
 func (s *Store) ListRules() ([]Rule, error) {
 	rows, err := s.db.Query(`SELECT id, tool, pattern, action, priority, group_name,
-		category, business, task, description, source FROM rules ORDER BY rowid`)
+		category, business, task, description, source, approval_timeout FROM rules ORDER BY rowid`)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +238,8 @@ func (s *Store) ListRules() ([]Rule, error) {
 	for rows.Next() {
 		var r Rule
 		if err := rows.Scan(&r.ID, &r.Tool, &r.Pattern, &r.Action, &r.Priority,
-			&r.Group, &r.Category, &r.Business, &r.Task, &r.Description, &r.Source); err != nil {
+			&r.Group, &r.Category, &r.Business, &r.Task, &r.Description, &r.Source,
+			&r.ApprovalTimeout); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -215,9 +250,10 @@ func (s *Store) ListRules() ([]Rule, error) {
 func (s *Store) GetRule(id string) (Rule, error) {
 	var r Rule
 	err := s.db.QueryRow(`SELECT id, tool, pattern, action, priority, group_name,
-		category, business, task, description, source FROM rules WHERE id=?`, id).Scan(
+		category, business, task, description, source, approval_timeout FROM rules WHERE id=?`, id).Scan(
 		&r.ID, &r.Tool, &r.Pattern, &r.Action, &r.Priority,
-		&r.Group, &r.Category, &r.Business, &r.Task, &r.Description, &r.Source)
+		&r.Group, &r.Category, &r.Business, &r.Task, &r.Description, &r.Source,
+		&r.ApprovalTimeout)
 	return r, err
 }
 
@@ -231,14 +267,15 @@ func (s *Store) UpsertRule(r Rule) (Rule, error) {
 		r.Source = "db"
 	}
 	_, err := s.db.Exec(`INSERT INTO rules
-		(id, tool, pattern, action, priority, group_name, category, business, task, description, source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, tool, pattern, action, priority, group_name, category, business, task, description, source, approval_timeout)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET tool=excluded.tool, pattern=excluded.pattern,
 		action=excluded.action, priority=excluded.priority, group_name=excluded.group_name,
 		category=excluded.category, business=excluded.business, task=excluded.task,
-		description=excluded.description, source=excluded.source`,
+		description=excluded.description, source=excluded.source,
+		approval_timeout=excluded.approval_timeout`,
 		r.ID, r.Tool, r.Pattern, r.Action, r.Priority, r.Group,
-		r.Category, r.Business, r.Task, r.Description, r.Source)
+		r.Category, r.Business, r.Task, r.Description, r.Source, r.ApprovalTimeout)
 	return r, err
 }
 
@@ -281,10 +318,10 @@ func (s *Store) Seed(pc *policy.PolicyConfig) (int, error) {
 	defer tx.Rollback() //nolint:errcheck — only fires on early return
 	for _, r := range pc.Rules {
 		if _, err := tx.Exec(`INSERT INTO rules
-			(id, tool, pattern, action, priority, group_name, category, business, task, description, source)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml')`,
+			(id, tool, pattern, action, priority, group_name, category, business, task, description, source, approval_timeout)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?)`,
 			r.ID, r.Tool, r.Pattern, r.Action, r.Priority, r.Group,
-			r.Category, r.Business, r.Task, r.Description); err != nil {
+			r.Category, r.Business, r.Task, r.Description, r.ApprovalTimeout); err != nil {
 			return 0, err
 		}
 	}
@@ -323,6 +360,7 @@ func (s *Store) LoadPolicyConfig() (*policy.PolicyConfig, error) {
 			ID: r.ID, Tool: r.Tool, Pattern: r.Pattern, Action: r.Action,
 			Priority: r.Priority, Group: r.Group, Category: r.Category,
 			Business: r.Business, Task: r.Task, Description: r.Description,
+			ApprovalTimeout: r.ApprovalTimeout,
 		})
 		addGroup(r.Group)
 	}
@@ -576,15 +614,16 @@ func (s *Store) SyncDefaults(pc *policy.PolicyConfig) (int, int, int, error) {
 			continue
 		}
 		if _, err := tx.Exec(`INSERT INTO rules
-			(id, tool, pattern, action, priority, group_name, category, business, task, description, source)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml')
+			(id, tool, pattern, action, priority, group_name, category, business, task, description, source, approval_timeout)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?)
 			ON CONFLICT(id) DO UPDATE SET tool=excluded.tool, pattern=excluded.pattern,
 			action=excluded.action, priority=excluded.priority, group_name=excluded.group_name,
 			category=excluded.category, business=excluded.business, task=excluded.task,
-			description=excluded.description, source='yaml'
+			description=excluded.description, source='yaml',
+			approval_timeout=excluded.approval_timeout
 			WHERE rules.source = 'yaml' OR rules.source = ''`,
 			r.ID, r.Tool, r.Pattern, r.Action, r.Priority, r.Group,
-			r.Category, r.Business, r.Task, r.Description); err != nil {
+			r.Category, r.Business, r.Task, r.Description, r.ApprovalTimeout); err != nil {
 			return 0, 0, 0, err
 		}
 		rules++
@@ -642,10 +681,10 @@ func (s *Store) ReplaceWith(pc *policy.PolicyConfig) (int, error) {
 			continue
 		}
 		if _, err := tx.Exec(`INSERT INTO rules
-			(id, tool, pattern, action, priority, group_name, category, business, task, description, source)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml')`,
+			(id, tool, pattern, action, priority, group_name, category, business, task, description, source, approval_timeout)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'yaml', ?)`,
 			r.ID, r.Tool, r.Pattern, r.Action, r.Priority, r.Group,
-			r.Category, r.Business, r.Task, r.Description); err != nil {
+			r.Category, r.Business, r.Task, r.Description, r.ApprovalTimeout); err != nil {
 			return 0, err
 		}
 	}

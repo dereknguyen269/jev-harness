@@ -13,6 +13,7 @@ import { JevCallsTab } from "@/components/jev-calls-tab"
 import { Login, probeAuth } from "@/components/login"
 import { OnboardingTour, markOnboarded, wasOnboarded } from "@/components/onboarding-tour"
 import { RulesTab } from "@/components/rules-tab"
+import { SettingsTab } from "@/components/settings-tab"
 import { UsersTab } from "@/components/users-tab"
 import { useTheme } from "@/hooks/use-theme"
 import { clearToken, clearUser, getHealth, getUser, me, type Identity } from "@/lib/api"
@@ -141,6 +142,7 @@ export default function App() {
             </TabsTrigger>
             <TabsTrigger value="audit">Audit</TabsTrigger>
             <TabsTrigger value="jev">Jev API</TabsTrigger>
+            <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
           <TabsContent value="rules">
             <RulesTab onCount={onCount} role={effectiveRole} />
@@ -162,6 +164,9 @@ export default function App() {
           </TabsContent>
           <TabsContent value="jev">
             <JevCallsTab />
+          </TabsContent>
+          <TabsContent value="settings">
+            <SettingsTab role={effectiveRole} />
           </TabsContent>
         </Tabs>
         )}

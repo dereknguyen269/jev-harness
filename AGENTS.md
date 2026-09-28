@@ -1,127 +1,64 @@
-# AGENTS.md — Jev Guard (Agent Safety Gateway v2)
+# AGENTS.md — Jev Guard (Agent Safety Gateway)
 
-## Build & Run
-
-```bash
-go build -o jev-guard ./cmd/jev-guard
-./jev-guard serve --listen 0.0.0.0:8787
-```
-
-Or `make build|test|vet|fmt|run|clean|policy-reset` (`make check` = ui-build+fmt+vet+test).
-`make build-go|test-go` skip the frontend (fail loudly if `web/dist/` is missing).
-
-Dashboard frontend is React + Tailwind v4 + shadcn/ui in `web/` (Node 20+ required).
-`make ui-build` runs `npm ci && npm run build` into `internal/server/web/dist/`,
-which `go:embed` picks up — always build via `make`, never bare `go build` on a
-fresh checkout. Backend API is unchanged (`/v1/*`).
-
-`go build` produces binaries at root only (gitignored). Rebuild after source changes.
-
-Default listen is `127.0.0.1:8787`; override with `--listen` flag or `LISTEN` env var in `.env`.
-`--profile default|strict|developer|permissive` selects `configs/profiles/*.yaml` when `--policy` is missing.
-`--db PATH` (`JEV_DB`, default `~/.hermes/guard/jev.db`) enables the SQLite policy store for the
-dashboard; empty value or open failure → YAML-only mode. First run seeds the DB from YAML.
-`--auth-token TOKEN` (`JEV_AUTH_TOKEN`, empty = auth disabled) gates the management API
-via `Authorization: Bearer` (dashboard shell stays open so login can load);
-`/v1/check|policies|health` stay open for agents.
-Any active user's API key also works as a Bearer token (master token maps to admin);
-`POST /v1/auth/login` (secret only — key identifies the user) and `GET /v1/auth/me` back the login screen.
-Roles: viewer reads; operator also approves + reloads; admin manages users/rules/groups (+ sees API keys, masked otherwise).
-
-Quick health check:
-```bash
-curl http://127.0.0.1:8787/health
-curl http://127.0.0.1:8787/v1/health
-```
-
-Other CLI: `jev-guard check --tool terminal --command "git status"`,
-`jev-guard policy test`, `jev-guard policy reseed [--mode merge|replace] [--force]`,
-`jev-guard eval evals/fixtures/policy.yaml`,
-`jev-guard audit [--decision D] [--min-risk F] [--json]`, `jev-guard doctor`.
-`serve --reseed` merges bundled YAML defaults into the DB on startup (keeps custom rules).
-
-## Testing
+## Build & test
 
 ```bash
-go test ./... -v
+make build          # frontend + binary; needs Node 20+ and Go 1.23+
+make check          # full gate: ui-build + fmt + vet + test
+make build-go|test-go  # Go-only escape hatch (no frontend)
+go test ./internal/<pkg>/ -run <TestName> -v  # single test
 ```
 
-Tests use mocks (`mockJevClient`, `judge.Mock`) — no network services needed.
+- `make ui-build` = `npm install && npm run build` in `web/` → `internal/server/web/dist/`, consumed by `go:embed` in `internal/server/server.go`. Bare `go build` on a fresh checkout fails at compile time when `dist/` is missing — always build via `make`.
+- `make fmt` is `gofmt -l internal cmd` with a non-empty check; keep it clean.
+- CI (`.github/workflows/ci.yml`) runs only `go test ./... -v` — run `make check` locally before pushing.
+- Tests use mocks (`mockJevClient`, `judge.Mock`), no network. `engine_test.go` resolves policy via `runtime.Caller`, so tests run from any directory.
+- Binaries build at repo root (`jev-guard`, gitignored). Frontend `package-lock.json` is now committed in `web/`.
 
-## Key files
+## Run
 
-| Path | Purpose |
-|------|---------|
-| `cmd/jev-guard/main.go` | CLI + HTTP server (`serve|check|policy <test\|reseed>|audit|eval|doctor|version`) |
-| `internal/domain/` | V2 `ToolRequest`, `DecisionResult`, `CanonicalTool`, risk `L0..L4`, `Approval` |
-| `internal/harness/` | Gateway pipeline `Normalize→Policy→Cache→Jev→fail-closed→ResolveJev→Audit` + resolver |
-| `internal/normalize/` | First-class canonical mapping (OpenCode/Kiro/Claude/Codex/OpenClaw → terminal/write_file/...) |
-| `internal/judge/` | `Judge` interface + Jev adapter (judgment only) + mock |
-| `internal/policy/engine.go` | Deterministic rules → Jev API → fail-closed (`Reload` swaps rules without restart) |
-| `internal/policy/v2.go` | `policies:` YAML format + `EngineV2` bridge to legacy rules (`Reload`) |
-| `internal/store/` | SQLite `users` + `rules` + `groups` + `categories` (`--db`); DB wins at runtime, YAML seeds + backs CLI; `SyncDefaults`/`PruneStaleDefaults`/`ReplaceWith` power `policy reseed` (source=`yaml` vs `db` decides overwrite) |
-| `internal/server/web/index.html` | REMOVED — replaced by React build (delete the file; history keeps it) |
-| `web/` | React dashboard ("Jev Guard", see `src/lib/site.ts`): Vite + Tailwind v4 + shadcn/ui (`button|input|textarea|label|select|table|dialog|badge|tabs|checkbox|sonner` + radix), first-run onboarding tour |
-| `internal/server/web/dist/` | Built dashboard, `go:embed` (gitignored, produced by `make ui-build`) |
-| `internal/jev/client.go` | Model-type auto-detection, provider-specific request formats |
-| `internal/cache/` | TTL decision cache (`read 30s, low 10s, mutation/critical 0s`) |
-| `internal/approval/` | Async approval store (30s TTL, `pending→approved|denied|expired`) |
-| `internal/audit/` | JSONL writer + reader/filter (`GET /v1/audit`, `stats`) |
-| `internal/server/` | HTTP gateway (`/v1/check|approvals|audit|stats|policies|health`, no `/v2`) |
-| `internal/server/` mgmt | Dashboard `GET /` + `/v1/users|rules|groups|categories` CRUD + `POST /v1/policy/reload` (503 when YAML-only) + `POST /v1/policy/reseed` (admin; `{"mode":"merge"|"replace","force":bool}`) + `GET /v1/jev/calls` (recent AI calls: status, latency, tokens). Gated by `--auth-token` when set (`GET /v1/auth/status` reports it) |
-| `internal/config/` | Profiles (`default|strict|developer|permissive`) + thresholds |
-| `configs/policy.yaml` | YAML rules, file-order matching (priority field ignored); 8 groups, every rule tagged `category: safety\|secrets\|productivity\|network`; git allows consolidated to `git-read`, `git-branch-workflow`, `git-sync` (dangerous git lives in `privileged-ops`) |
-| `plugins/opencode/jev-guard.js` | OpenCode plugin source, hooks `tool.execute.before` |
-| `.opencode/plugins/jev-guard.js` | Installed OpenCode plugin (generated copy) |
-| `.opencode/opencode.json` | References plugin `"jev-guard"` |
-| `.opencode/package.json` | Plugin dependency `@opencode-ai/plugin` v1.18.31 |
-| `generate-opencode-plugin.sh` | Copies `plugins/opencode/jev-guard.js` to install target |
-| `plugins/kiro/jev-guard.py` | Canonical Kiro PreToolUse hook (stdlib only; stdin JSON > flags > env) |
-| `plugins/kiro/hooks/jev-guard.json.template` | Kiro hook template (`__GUARD_SCRIPT__` rendered at install) |
-| `generate-kiro-plugin.sh` | Installs Kiro hook (`--project` to `.kiro/`, `--global` to `~/.kiro/`) |
+```bash
+./jev-guard serve --listen 127.0.0.1:8787   # default listen; also LISTEN env / .env
+./jev-guard check --tool terminal --command "git status"  # exit 0 allow / 2 block / 3 approval_required
+./jev-guard policy test                     # run bundled fixtures after editing policy
+./jev-guard eval evals/fixtures/policy.yaml
+./jev-guard doctor
+./jev-guard approvals [--status pending|all] [--json] [--db PATH]  # --db accepted anywhere in args
+./jev-guard approve|deny <id-prefix> [--db PATH]
+jev-guard policy reseed [--mode merge|replace] [--force]  # replace destroys customs without --force
+```
 
-## Architecture
+- Policy source: `--policy PATH` (or `POLICY_PATH`) > `--profile default|strict|developer|permissive` (`configs/profiles/`) > `configs/policy.yaml`. `--policy` accepts a directory (merges `*.yaml` sorted). `--group A,B` / `POLICY_GROUPS` filters groups.
+- `--db PATH` (`JEV_DB`, default `~/.hermes/guard/jev.db`): DB seeded from YAML on first run, then DB wins at runtime and YAML backs offline CLI. Empty/unopenable → YAML-only mode (management API returns 503). `serve --reseed` merges bundled defaults on startup (keeps custom rules).
+- `--auth-token` (`JEV_AUTH_TOKEN`, empty = open): gates management API via `Authorization: Bearer`. Open always: `/`, `/assets/*`, `/health`, `/v1/health|check|policies|auth/*`. Any active user's API key also works as Bearer (master token = admin). Roles: viewer reads; operator +approve/reload; admin +users/rules/groups (keys masked for non-admins).
+- `.env` auto-loaded from CWD **and** `~/.config/jev-guard/.env` (supports `export` prefix, inline `#`, quoted values; existing env wins). Key priority: `--jev-api-key` > `JEV_API_KEY` > `TYPESAFE_API_KEY` > `OPENROUTER_API_KEY`. Model auto-detect: `typesafe-ai/*` or `*jev*` → evaluation API, else OpenAI chat format.
+- Audit log: `$HOME/.hermes/guard/audit.jsonl` (or `AUDIT_PATH`).
 
-- **Entry:** `cmd/jev-guard/main.go` — CLI + HTTP server (`serve` flag `--listen`, `--profile`).
-- **Policy engine:** `internal/policy/engine.go` — deterministic rules first, then optional Jev API, fail-closed.
-- **Jev client:** `internal/jev/client.go` — model-type auto-detection:
-  - Evaluation models (`typesafe-ai/jev`, `jev-latest`) → `{model, state, questions}` to `/v1/evaluate`
-  - Chat LLMs → OpenAI `{model, messages}` to `/v1/chat/completions`
-  - Auto-detection: `strings.HasPrefix(model, "typesafe-ai/") || strings.Contains(model, "jev")` → evaluation type
-  - Vercel AI Gateway: `https://ai-gateway.vercel.sh/v1/evaluate`
-  - API key priority: `-jev-api-key` flag > `JEV_API_KEY` > `TYPESAFE_API_KEY` > `OPENROUTER_API_KEY`
-  - Evaluation model forces endpoint to `/v1/evaluate`
-- **`.env` auto-load:** `main.go` loads `.env` from CWD at startup (stdlib only). Supports `export KEY=value` prefix and inline `#` comments. Skipped if missing.
-- **Config:** `configs/policy.yaml` — rules have `id`, `tool`, `pattern` (regex), `action` (`block`/`approval_required`/`allow`), `priority`, plus `group`/`category`/`business`/`task` scopes. Rules evaluated in file order, **not** by priority — first match wins.
+## Architecture (pipeline order matters)
 
-## Key behaviors
+`internal/normalize` → `internal/policy` → `internal/cache` → `internal/judge` → fail-closed → `internal/approval` + `internal/audit`. Entry: `cmd/jev-guard/main.go`; HTTP routes: `internal/server/server.go` (`/v1/*` only, no `/v2`).
 
-- `/v1/check` POST returns `{"decision": "allow"|"block"|"approval_required", ...}`. Unknown commands with no Jev client → `block` (fail-closed).
-- Audit logging writes JSONL to `$HOME/.hermes/guard/audit.jsonl` by default, or `$AUDIT_PATH` if set.
-- `/v1/audit` GET is a stub — returns "not yet implemented".
-- `/v2/*` gateway: `POST /v2/check` (full `DecisionResult` + `approval_id`), approvals, `GET /v2/audit|stats|policies|health`.
-- Dashboard management: `GET|POST /v1/users`, `PUT|DELETE /v1/users/{id}`, `GET|POST /v1/rules`,
-  `PUT|DELETE /v1/rules/{id}`, `POST /v1/policy/reload` (503 when YAML-only).
-- Rule writes validate action + regex (400 on invalid) and auto-reload the live engine.
-- `Normalize()` maps tool names incl. Kiro: `execute_bash` → `terminal`/execute, `fs_write`/`fs_append`/`str_replace`/`delete_file`/`smart_relocate` → `write_file`/write (delete flags destructive, relocate uses destination path). Unknown tools fall through to generic extractor.
-- `internal/normalize` canonicalizes all agents first: `Bash/shell/execute→terminal`, `Write/Edit/apply_patch→write_file`, `Read→read_file`. `EngineV2` evaluates via canonical name so variants hit the same rules.
-- HTTP client timeout: 10 seconds (500ms was too short for Vercel gateway).
+- **Normalize first:** `Bash/shell/execute→terminal`, `Write/Edit/apply_patch→write_file`, `Read→read_file` (plus Kiro `execute_bash`/`fs_write`/… variants). Rules match canonical names, so tool-name variants hit the same rule.
+- **Policy:** rules match in YAML **file order, first wins — `priority` is parsed but ignored**. Keep blocks → approvals → allows ordered. Request scope: rule `business`/`task` only matches when `context.business`/`task` is set; `category`/`group` are dashboard taxonomy, never match scope. Run `policy test` after editing; writes via API validate regex+action (400) and auto-reload.
+- **Fail-closed:** unknown commands with no Jev key → `block`. Jev returns judgment only (`risk`/`confidence`/`action`); the Go engine makes the final decision (confidence-gated per risk level, `risk ≥ 0.95` → block).
+- **Cache:** reads 30s, low-risk allows 10s; mutations/criticals/approvals never cached.
+- **Approvals:** `pending→approved|denied|expired`. TTL = per-rule `approval_timeout` else default (`--approval-ttl`/`JEV_APPROVAL_TTL`/DB `settings.approval_ttl_seconds`, 5s–1h, default 30s). Persisted to SQLite when `--db` is up (same record as dashboard buttons, plugin poll, and `approve|deny` CLI — either channel unblocks), memory-only in YAML-only mode.
+- `configs/policy.yaml`: 8 groups, every rule tagged `category: safety|secrets|productivity|network`.
 
-## Dependencies
+## Adapters (never edit installed copies)
 
-- `github.com/gorilla/mux v1.8.1` (routing)
-- `github.com/google/uuid v1.6.0` (cache key hashing)
-- `gopkg.in/yaml.v3 v3.0.1` (policy parsing)
-- `modernc.org/sqlite` (pure-Go SQLite for the dashboard store; run `go mod tidy` after checkout)
-- Go 1.23.4
+Sources of truth: `plugins/opencode/jev-guard.js` (`tool.execute.before`), `plugins/kiro/jev-guard.py`, `adapters/{claude,codex,openclaw}/*.py`, `adapters/generic/jev-guard-check.sh`. Regenerate after changes:
+
+```bash
+./generate-opencode-plugin.sh [name] [--global|--project] [--force]  # → .opencode/plugins/ (project default)
+./generate-kiro-plugin.sh [--global|--project] [--project-dir DIR] [--force]  # scope flag first
+```
+
+Guard endpoint for plugins: `JEV_GUARD_URL` (default `http://127.0.0.1:8787`), `JEV_GUARD_TIMEOUT_MS` (default 2000).
 
 ## Gotchas
 
-- `.gitignore` ignores `.env`, `guard`, `jev-guard`, `*.test.json`, `*.log` — don't commit env files or built binaries.
-- `engine_test.go` uses `runtime.Caller` for portable policy path resolution — tests run from any directory.
-- Policy `priority` field is parsed but **not used** — rules match in YAML file order.
-- `.opencode/plugins/jev-guard.js` must match `plugins/opencode/jev-guard.js`. Run `./generate-opencode-plugin.sh my-jev-harness --project` to regenerate after changes.
-- `generate-opencode-plugin.sh` takes `<plugin-name> [--global|--project]`; flag is `$2`, not `$1` (plugin name is ignored).
-- `generate-opencode-plugin.sh` copies source to `.opencode/plugins/jev-guard.js` for project install; config path is `./.opencode/opencode.json`.
-- `.kiro/hooks/jev-guard.json` + `.kiro/scripts/jev-guard.py` are generated copies of `plugins/kiro/*`. Run `./generate-kiro-plugin.sh --project --force` (or `--global`) to regenerate after changes.
-- `generate-kiro-plugin.sh` usage is `./generate-kiro-plugin.sh [--global|--project] [--project-dir DIR] [--force]` (scope flag first, unlike the opencode script).
+- `.gitignore` covers `.env`, built binaries, `*.test.json`, `*.log` — don't commit env or binaries.
+- `make policy-reset` (`policy reseed --mode replace --force`) destroys dashboard custom rules; users survive. Restart server afterwards.
+- HTTP client timeout is 10s (Vercel gateway needs it); don't shorten.
+- Management writes need `--db`; without it they 503 even though reads work.

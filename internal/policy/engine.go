@@ -56,6 +56,9 @@ type DecisionResponse struct {
 	Reason          string     `json:"reason"`
 	Policy          PolicyInfo `json:"policy"`
 	RequestApproval bool       `json:"request_approval"`
+	// ApprovalTimeout carries the matched rule's approval_timeout (seconds,
+	// 0 = default) toward the harness TTL resolution.
+	ApprovalTimeout int `json:"approval_timeout,omitempty"`
 }
 
 type ToolAction struct {
@@ -85,6 +88,9 @@ type Rule struct {
 	Business    string `yaml:"business,omitempty"`
 	Task        string `yaml:"task,omitempty"`
 	Description string `yaml:"description,omitempty"`
+	// ApprovalTimeout is the per-rule approval TTL in seconds, honoured
+	// only when action is approval_required (0 = default).
+	ApprovalTimeout int `yaml:"approval_timeout,omitempty"`
 }
 
 // GroupDef declares a policy group in the YAML header.
@@ -160,16 +166,17 @@ func (e *Engine) isActiveLocked(r Rule) bool {
 	return e.active[r.Group] || e.active[r.Category] || e.active[r.Business] || e.active[r.Task]
 }
 
-// matchesScopeLocked enforces rule-declared business/task/category scope
-// against the request context. Empty rule scope = match all.
+// matchesScopeLocked enforces rule-declared business/task scope against
+// the request context. Empty rule scope = match all.
+//
+// Category (and group) are taxonomy for the dashboard, NOT request scope:
+// adapters never send a category, so gating on it would silently disable
+// every tagged rule. Business/task remain genuine scopes.
 func matchesScopeLocked(r Rule, ctx RequestContext) bool {
 	if r.Business != "" && r.Business != ctx.Business {
 		return false
 	}
 	if r.Task != "" && r.Task != ctx.Task {
-		return false
-	}
-	if r.Category != "" && r.Category != ctx.Category {
 		return false
 	}
 	return true
@@ -524,6 +531,7 @@ func (e *Engine) CheckWithContext(ta ToolAction, ctx RequestContext) (DecisionRe
 					Reason:          fmt.Sprintf("Approval required by rule %s: %s", r.ID, target),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: true,
+					ApprovalTimeout: r.ApprovalTimeout,
 				}, true
 			case "allow":
 				return DecisionResponse{

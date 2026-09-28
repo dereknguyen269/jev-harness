@@ -439,7 +439,8 @@ func TestSeedCategoriesFromRules(t *testing.T) {
 		t.Fatalf("re-seed=%d want 0", n)
 	}
 	cats, err := s.ListCategories()
-	if err != nil || len(cats) != 1 || cats[0].Name != "safety" || cats[0].Description != "" {
+	if err != nil || len(cats) != 1 || cats[0].Name != "safety" ||
+		cats[0].Description != DefaultCategoryDescriptions["safety"] {
 		t.Fatalf("cats=%v err=%v", cats, err)
 	}
 }

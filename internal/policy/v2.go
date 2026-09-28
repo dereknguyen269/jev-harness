@@ -51,6 +51,9 @@ type V2Decision struct {
 	Action     string  `yaml:"action"`
 	Risk       float64 `yaml:"risk"`
 	ReasonCode string  `yaml:"reason_code"`
+	// ApprovalTimeout is the per-policy approval TTL in seconds, honoured
+	// only when action is approval_required (0 = default).
+	ApprovalTimeout int `yaml:"approval_timeout,omitempty"`
 }
 
 type V2Config struct {
@@ -246,13 +249,12 @@ func (e *EngineV2) Evaluate(_ context.Context, req domain.NormalizedRequest) dom
 			continue
 		}
 		// Rule-declared scope: only match when the request carries it.
+		// Category is taxonomy, not scope (adapters send none) — see
+		// matchesScopeLocked in the legacy engine.
 		if c.rule.Business != "" && c.rule.Business != req.Request.Context.Business {
 			continue
 		}
 		if c.rule.Task != "" && c.rule.Task != req.Request.Context.Task {
-			continue
-		}
-		if c.rule.Category != "" && c.rule.Category != req.Request.Context.Category {
 			continue
 		}
 		if c.rule.Match.Context.Environment != "" &&
@@ -265,10 +267,6 @@ func (e *EngineV2) Evaluate(_ context.Context, req domain.NormalizedRequest) dom
 		}
 		if c.rule.Match.Context.Task != "" &&
 			c.rule.Match.Context.Task != req.Request.Context.Task {
-			continue
-		}
-		if c.rule.Match.Context.Category != "" &&
-			c.rule.Match.Context.Category != req.Request.Context.Category {
 			continue
 		}
 		if c.cmd != nil && !c.cmd.MatchString(req.Command) {
@@ -307,13 +305,14 @@ func (e *EngineV2) Evaluate(_ context.Context, req domain.NormalizedRequest) dom
 				Matched: true,
 				Final:   true,
 				Decision: domain.DecisionResult{
-					Decision:        domain.Decision(dr.Decision),
-					Risk:            dr.Risk,
-					Confidence:      dr.Confidence,
-					Source:          "policy",
-					PolicyID:        dr.Policy.RuleID,
-					Reason:          dr.Reason,
-					RequestApproval: dr.RequestApproval,
+					Decision:            domain.Decision(dr.Decision),
+					Risk:                dr.Risk,
+					Confidence:          dr.Confidence,
+					Source:              "policy",
+					PolicyID:            dr.Policy.RuleID,
+					Reason:              dr.Reason,
+					RequestApproval:     dr.RequestApproval,
+					ApprovalTimeoutSecs: dr.ApprovalTimeout,
 				},
 			}
 		}
@@ -350,15 +349,16 @@ func V2ToRules(cfg *V2Config) []Rule {
 			pattern = ".*"
 		}
 		out = append(out, Rule{
-			ID:          r.ID,
-			Tool:        tool,
-			Pattern:     pattern,
-			Action:      r.Decision.Action,
-			Group:       r.Group,
-			Category:    r.Category,
-			Business:    firstNonEmpty(r.Business, r.Match.Context.Business),
-			Task:        firstNonEmpty(r.Task, r.Match.Context.Task),
-			Description: r.Description,
+			ID:              r.ID,
+			Tool:            tool,
+			Pattern:         pattern,
+			Action:          r.Decision.Action,
+			Group:           r.Group,
+			Category:        r.Category,
+			Business:        firstNonEmpty(r.Business, r.Match.Context.Business),
+			Task:            firstNonEmpty(r.Task, r.Match.Context.Task),
+			Description:     r.Description,
+			ApprovalTimeout: r.Decision.ApprovalTimeout,
 		})
 		// Category from match context when the top-level tag is empty.
 		if out[len(out)-1].Category == "" {
@@ -391,14 +391,15 @@ func v2Result(r V2Rule, risk float64, target string) domain.PolicyResult {
 		Matched: true,
 		Final:   true,
 		Decision: domain.DecisionResult{
-			Decision:        action,
-			Risk:            risk,
-			Confidence:      1.0,
-			Source:          "policy",
-			PolicyID:        r.ID,
-			ReasonCode:      rc,
-			Reason:          reason,
-			RequestApproval: action == domain.ApprovalRequired,
+			Decision:            action,
+			Risk:                risk,
+			Confidence:          1.0,
+			Source:              "policy",
+			PolicyID:            r.ID,
+			ReasonCode:          rc,
+			Reason:              reason,
+			RequestApproval:     action == domain.ApprovalRequired,
+			ApprovalTimeoutSecs: r.Decision.ApprovalTimeout,
 		},
 	}
 }

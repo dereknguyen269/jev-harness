@@ -18,13 +18,19 @@ type Call struct {
 	Error        string    `json:"error,omitempty"`
 }
 
-// CallLog is a bounded in-memory ring of recent API calls.
-// Like approvals, it is intentionally not persisted: it answers
-// "what did we just send the model?" for the dashboard.
+// CallPersistence is the SQLite backend for AI call records (implemented
+// by internal/store.Store). Interface-only, so jev stays storage-free.
+type CallPersistence interface {
+	InsertJevCall(Call) error
+}
+
+// CallLog is a bounded in-memory ring of recent API calls. The client
+// additionally write-throughs every call to SQLite when persistence is
+// attached, so history survives restarts.
 type CallLog struct {
-	mu   sync.Mutex
+	mu    sync.Mutex
 	calls []Call
-	cap  int
+	cap   int
 }
 
 func NewCallLog(capacity int) *CallLog {

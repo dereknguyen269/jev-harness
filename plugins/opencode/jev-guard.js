@@ -17,8 +17,14 @@
 //                                  block = legacy behavior: throw immediately
 //   JEV_GUARD_APPROVAL_POLL_MS     approval poll interval (default 1000)
 //   JEV_GUARD_APPROVAL_TIMEOUT_MS  max wait (default expires_in*1000 + 2000)
-//   JEV_AUTH_TOKEN                 bearer for approval polling — required only
-//                                  when the server runs with --auth-token
+//   JEV_AUTH_TOKEN                 bearer for approval polling. Must match the
+//                                  guard's token: the server reads it from
+//                                  --auth-token / JEV_AUTH_TOKEN (empty =
+//                                  auth disabled). A mismatch (or missing
+//                                  token against an authed guard) makes every
+//                                  approval poll 401 and the plugin fail
+//                                  closed on timeout — set it in the
+//                                  opencode process env, then restart opencode.
 
 const GUARD_URL = (process.env.JEV_GUARD_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
 const GUARD_TIMEOUT = Number(process.env.JEV_GUARD_TIMEOUT_MS) || 2000;
@@ -65,17 +71,49 @@ export const JevGuard = async ({ project, directory, worktree, client, $ }) => {
 
   function approvalInstructions(decision) {
     const id = decision.approval_id;
+    const short = String(id || "").slice(0, 8);
     const reason = decision.reason || "risk detected";
     return [
       `Jev guard wants a human decision: ${reason} (risk ${decision.risk ?? "?"})`,
       `Approve: curl -X POST ${GUARD_URL}/v1/approvals/${id}/approve -H "Authorization: Bearer <token>"`,
       `Deny:    curl -X POST ${GUARD_URL}/v1/approvals/${id}/deny -H "Authorization: Bearer <token>"`,
+      `Or in a terminal: jev-guard approve ${short}  (deny: jev-guard deny ${short})`,
       `Or open the dashboard: ${GUARD_URL}/`,
     ].join("\n");
   }
 
   // waitForApproval polls the approval until a human approves/denies it or
   // it expires. Resolves on approve; throws on deny/expire/timeout (block).
+  // Reads the paged history endpoint (bounded); falls back to the bare
+  // array for older guards without it.
+  async function fetchApprovals() {
+    const paged = await fetch(`${GUARD_URL}/v1/approvals/page?per_page=100`, {
+      headers: guardHeaders(),
+      signal: AbortSignal.timeout(GUARD_TIMEOUT),
+    });
+    if (paged.status === 404) {
+      const bare = await fetch(`${GUARD_URL}/v1/approvals`, {
+        headers: guardHeaders(),
+        signal: AbortSignal.timeout(GUARD_TIMEOUT),
+      });
+      if (bare.status === 401 || bare.status === 403) {
+        throw new Error(`cannot read approvals (HTTP ${bare.status}) — set JEV_AUTH_TOKEN to a viewer-or-better token`);
+      }
+      if (!bare.ok) {
+        throw new Error(`approval poll returned HTTP ${bare.status}`);
+      }
+      return await bare.json();
+    }
+    if (paged.status === 401 || paged.status === 403) {
+      throw new Error(`cannot read approvals (HTTP ${paged.status}) — set JEV_AUTH_TOKEN to a viewer-or-better token`);
+    }
+    if (!paged.ok) {
+      throw new Error(`approval poll returned HTTP ${paged.status}`);
+    }
+    const body = await paged.json();
+    return Array.isArray(body) ? body : body.approvals || [];
+  }
+
   async function waitForApproval(decision) {
     const ttlMs = (Number(decision.expires_in) || 30) * 1000;
     const timeoutMs = Number(process.env.JEV_GUARD_APPROVAL_TIMEOUT_MS) || ttlMs + 2000;
@@ -83,17 +121,7 @@ export const JevGuard = async ({ project, directory, worktree, client, $ }) => {
     for (;;) {
       let approvals;
       try {
-        const res = await fetch(`${GUARD_URL}/v1/approvals`, {
-          headers: guardHeaders(),
-          signal: AbortSignal.timeout(GUARD_TIMEOUT),
-        });
-        if (res.status === 401 || res.status === 403) {
-          throw new Error(`cannot read approvals (HTTP ${res.status}) — set JEV_AUTH_TOKEN to a viewer-or-better token`);
-        }
-        if (!res.ok) {
-          throw new Error(`approval poll returned HTTP ${res.status}`);
-        }
-        approvals = await res.json();
+        approvals = await fetchApprovals();
       } catch (err) {
         if (Date.now() >= deadline) throw err;
         await sleep(APPROVAL_POLL_MS);
@@ -130,6 +158,12 @@ export const JevGuard = async ({ project, directory, worktree, client, $ }) => {
           await notify("info", `Jev guard approval ${decision.approval_id} approved — proceeding with ${input.tool}`);
           return;
         }
+        if (decision.decision === "allow") {
+          return;
+        }
+        // Unknown or missing verdict: fail closed. An explicit allow is the
+        // only response that lets the tool run.
+        throw new Error(`Blocked by Jev guard: unrecognized decision ${JSON.stringify(decision.decision)} (${decision.reason || "no reason"})`);
       } catch (err) {
         if (err.message && err.message.startsWith("Blocked by Jev guard")) {
           throw err;

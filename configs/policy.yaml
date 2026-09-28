@@ -6,10 +6,11 @@
 #
 # Group filtering: `jev-guard serve --group secrets,code-allow` or
 # POLICY_GROUPS="..." evaluates only those groups (ungrouped rules always
-# stay active). Groups are the primary bucket; category/business/task are
-# optional scopes — a rule with `category: secrets` only matches requests
-# carrying `context.category: secrets`, and a rule with `business: payments`
-# only matches `context.business: payments` (same for task).
+# stay active). Groups are the primary bucket; business/task are optional
+# request scopes — a rule with `business: payments` only matches
+# `context.business: payments` (same for task). Category (and group) are
+# taxonomy for the dashboard, never match scope: adapters send no category,
+# so every rule matches regardless of its tag.
 #
 # Categories (4 values used across this file; no header — the store derives
 # them from rule tags on first seed, see Store.SeedCategories):
@@ -235,6 +236,7 @@ rules:
   - id: allow-all-web-reads
     tool: "*"
     group: browser
+    category: network
     pattern: "^https?://"
     action: allow
     priority: 10

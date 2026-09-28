@@ -84,6 +84,7 @@ func (g *Gateway) Router() *mux.Router {
 	// Role model: viewer reads; operator also approves + reloads;
 	// admin also manages users/rules/groups. Unknown roles read like viewer.
 	r.HandleFunc("/v1/approvals", g.requireAuth(g.handleListApprovals)).Methods("GET")
+	r.HandleFunc("/v1/approvals/page", g.requireAuth(g.handleListApprovalsPage)).Methods("GET")
 	r.HandleFunc("/v1/approvals/{id}/approve", g.requireRole(g.handleDecide(true), "admin", "operator")).Methods("POST")
 	r.HandleFunc("/v1/approvals/{id}/deny", g.requireRole(g.handleDecide(false), "admin", "operator")).Methods("POST")
 	r.HandleFunc("/v1/audit", g.requireAuth(g.handleAudit)).Methods("GET")
@@ -99,6 +100,8 @@ func (g *Gateway) Router() *mux.Router {
 	r.HandleFunc("/v1/rules/{id}", g.requireRole(g.handleDeleteRule, "admin")).Methods("DELETE")
 	r.HandleFunc("/v1/policy/reload", g.requireRole(g.handlePolicyReload, "admin", "operator")).Methods("POST")
 	r.HandleFunc("/v1/policy/reseed", g.requireRole(g.handlePolicyReseed, "admin")).Methods("POST")
+	r.HandleFunc("/v1/settings", g.requireAuth(g.handleGetSettings)).Methods("GET")
+	r.HandleFunc("/v1/settings", g.requireRole(g.handlePutSettings, "admin")).Methods("PUT")
 	r.HandleFunc("/v1/jev/calls", g.requireAuth(g.handleJevCalls)).Methods("GET")
 	r.HandleFunc("/v1/groups", g.requireAuth(g.handleListGroups)).Methods("GET")
 	r.HandleFunc("/v1/groups", g.requireRole(g.handleCreateGroup, "admin")).Methods("POST")
@@ -477,6 +480,13 @@ func validRule(r store.Rule) error {
 	default:
 		return fmt.Errorf("action must be allow, block, or approval_required")
 	}
+	if t := r.ApprovalTimeout; t != 0 && (t < domain.MinApprovalTTLSeconds || t > domain.MaxApprovalTTLSeconds) {
+		return fmt.Errorf("approval_timeout must be 0 (default) or %d..%d seconds",
+			domain.MinApprovalTTLSeconds, domain.MaxApprovalTTLSeconds)
+	}
+	if r.ApprovalTimeout != 0 && !strings.EqualFold(strings.TrimSpace(r.Action), "approval_required") {
+		return fmt.Errorf("approval_timeout only applies to approval_required rules")
+	}
 	if r.Pattern != "" {
 		if _, err := regexp.Compile(r.Pattern); err != nil {
 			return fmt.Errorf("invalid pattern regex: %w", err)
@@ -622,6 +632,67 @@ func (g *Gateway) handlePolicyReseed(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleGetSettings serves the dashboard settings (currently the default
+// approval TTL). Anyone with read access may view; YAML-only mode has
+// nowhere to persist settings, so it answers 503 like the other
+// management endpoints.
+func (g *Gateway) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
+	s := g.requireStore(w)
+	if s == nil {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approval_ttl_seconds": g.effectiveApprovalTTLSeconds(s),
+	})
+}
+
+// handlePutSettings updates dashboard settings live: the value persists to
+// SQLite and applies to the running harness immediately (no restart).
+// Admin only; out-of-range values are rejected.
+func (g *Gateway) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	s := g.requireStore(w)
+	if s == nil {
+		return
+	}
+	var body struct {
+		ApprovalTTLSeconds *int `json:"approval_ttl_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if body.ApprovalTTLSeconds == nil {
+		http.Error(w, "approval_ttl_seconds required", http.StatusBadRequest)
+		return
+	}
+	secs := *body.ApprovalTTLSeconds
+	if secs < domain.MinApprovalTTLSeconds || secs > domain.MaxApprovalTTLSeconds {
+		http.Error(w, fmt.Sprintf("approval_ttl_seconds must be %d..%d",
+			domain.MinApprovalTTLSeconds, domain.MaxApprovalTTLSeconds), http.StatusBadRequest)
+		return
+	}
+	if err := s.SetSetting(store.SettingApprovalTTLSeconds, strconv.Itoa(secs)); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if g.Harness != nil {
+		g.Harness.SetApprovalTTLSeconds(secs)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approval_ttl_seconds": secs})
+}
+
+// effectiveApprovalTTLSeconds prefers the stored UI setting, falling back
+// to the live harness default (flag/env seed).
+func (g *Gateway) effectiveApprovalTTLSeconds(s *store.Store) int {
+	if secs, ok := s.GetApprovalTTLSeconds(); ok {
+		return domain.ClampApprovalTTLSeconds(secs)
+	}
+	if g.Harness != nil {
+		return g.Harness.ApprovalTTLSeconds()
+	}
+	return domain.DefaultApprovalTTLSeconds
+}
+
 // reloadEngineFromStore loads the DB rule set into the live policy engine.
 // Returns the rule count. A nil/empty DB keeps the current engine as-is.
 func (g *Gateway) reloadEngineFromStore() (int, error) {
@@ -668,12 +739,26 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 // handleJevCalls serves recent outbound AI API calls, newest first.
 // Default 20, cap 100. Empty array (not an error) when Jev never ran.
+// The SQLite history wins when the store is up (survives restarts);
+// otherwise the in-memory ring answers.
 func (g *Gateway) handleJevCalls(w http.ResponseWriter, r *http.Request) {
 	limit := 20
 	if s := r.URL.Query().Get("limit"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n > 0 {
 			limit = min(n, 100)
 		}
+	}
+	if g.Store != nil {
+		calls, err := g.Store.ListJevCalls(limit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if calls == nil {
+			calls = []jev.Call{}
+		}
+		writeJSON(w, http.StatusOK, calls)
+		return
 	}
 	out := []jev.Call{}
 	if g.Harness != nil {
@@ -732,6 +817,56 @@ func (g *Gateway) handleListApprovals(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, g.Approvals.List())
+}
+
+// ApprovalsPage is the paginated approval history envelope. approvals are
+// newest-first by created_at; pending is the live pending count for the
+// dashboard tab badge.
+type ApprovalsPage struct {
+	Approvals []domain.Approval `json:"approvals"`
+	Total     int               `json:"total"`
+	Page      int               `json:"page"`
+	PerPage   int               `json:"per_page"`
+	Pages     int               `json:"pages"`
+	Pending   int               `json:"pending"`
+}
+
+// handleListApprovalsPage serves GET /v1/approvals/page?page=1&per_page=25.
+// The bare /v1/approvals array is kept for the agent polling plugins.
+func (g *Gateway) handleListApprovalsPage(w http.ResponseWriter, r *http.Request) {
+	if g.Approvals == nil {
+		writeJSON(w, http.StatusOK, ApprovalsPage{Approvals: []domain.Approval{}, Page: 1, PerPage: 25, Pages: 1})
+		return
+	}
+	page := 1
+	if n, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && n > 0 {
+		page = n
+	}
+	perPage := 25
+	if n, err := strconv.Atoi(r.URL.Query().Get("per_page")); err == nil && n > 0 {
+		perPage = min(n, 100)
+	}
+	items, total, err := g.Approvals.ListPage(perPage, (page-1)*perPage)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if items == nil {
+		items = []domain.Approval{}
+	}
+	pages := 1
+	if total > 0 {
+		pages = (total + perPage - 1) / perPage
+	}
+	pending, err := g.Approvals.PendingCount()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, ApprovalsPage{
+		Approvals: items, Total: total, Page: page,
+		PerPage: perPage, Pages: pages, Pending: pending,
+	})
 }
 
 func (g *Gateway) handleDecide(approve bool) http.HandlerFunc {
