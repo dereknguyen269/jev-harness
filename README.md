@@ -52,6 +52,19 @@ With dashboard auth (off by default):
 ./jev-guard serve --auth-token s3cret
 ```
 
+## macOS Dock app
+
+```bash
+make macos-app          # darwin-only; needs rsvg-convert (brew install librsvg)
+open dist/jev-guard.app # Dock tile + auto-opens the dashboard
+```
+
+This wraps `./jev-guard serve` as `jev-guard.app` (sources in
+`packaging/macos/`, icon in `packaging/macos/icon.svg`). Quitting the app
+stops the gateway. Copy it to `/Applications` to keep it; the app points
+at this checkout, so re-run `make macos-app` after moving the repo (or
+set `JEV_GUARD_REPO`). `JEV_GUARD_OPEN_DASHBOARD=0` disables auto-open.
+
 ## Dashboard
 
 `GET /` serves the embedded React + shadcn/ui dashboard (built by

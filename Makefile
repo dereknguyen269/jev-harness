@@ -3,7 +3,7 @@ PKG := ./cmd/jev-guard
 UI_DIR := web
 UI_DIST := internal/server/web/dist
 
-.PHONY: build build-go test test-go vet fmt tidy run clean doctor check ui-install ui-build policy-reset
+.PHONY: build build-go test test-go vet fmt tidy run clean doctor check ui-install ui-build policy-reset macos-app
 
 # Frontend (React + shadcn/ui). Requires Node 20+.
 # npm install (not ci): no lockfile is committed since it can't be
@@ -48,8 +48,15 @@ policy-reset: build-go
 doctor: build
 	./$(BINARY) doctor
 
+# macOS Dock bundle (darwin only): jev-guard.app wrapping ./jev-guard serve.
+# Needs web/dist first — on a fresh checkout run `make build` (or ui-build)
+# once, then build-go suffices. The baked repo path means re-run after moves.
+macos-app: build-go
+	@if [ "$$(uname -s)" != "Darwin" ]; then echo "macos-app: macOS only (uname $$(uname -s))"; exit 1; fi
+	./scripts/make-macos-app.sh
+
 check: ui-build fmt vet test
 
 clean:
 	rm -f $(BINARY)
-	rm -rf $(UI_DIST) $(UI_DIR)/node_modules
+	rm -rf $(UI_DIST) $(UI_DIR)/node_modules dist
