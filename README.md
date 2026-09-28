@@ -65,6 +65,21 @@ stops the gateway. Copy it to `/Applications` to keep it; the app points
 at this checkout, so re-run `make macos-app` after moving the repo (or
 set `JEV_GUARD_REPO`). `JEV_GUARD_OPEN_DASHBOARD=0` disables auto-open.
 
+## macOS menu bar notifier
+
+```bash
+make macos-menubar                 # darwin-only; LSUIElement bundle (no Dock tile)
+open dist/jev-guard-menubar.app    # shield icon, pending count, native alerts
+# ...or in a terminal: ./jev-guard menubar [--guard-url URL] [--poll SECS]
+```
+
+Polls the gateway for pending approvals (default every 2s), posts a
+native notification per new arrival, and offers Approve/Deny right in the
+menu (same record as dashboard + `approve|deny` CLI). When the gateway
+runs with `--auth-token`, the notifier needs the same token as
+`JEV_AUTH_TOKEN` or the menu shows an auth-mismatch state. Needs the
+gateway up — it shows "Guard offline" otherwise.
+
 ## Dashboard
 
 `GET /` serves the embedded React + shadcn/ui dashboard (built by

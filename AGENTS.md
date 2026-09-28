@@ -7,6 +7,7 @@ make build          # frontend + binary; needs Node 20+ and Go 1.23+
 make check          # full gate: ui-build + fmt + vet + test
 make build-go|test-go  # Go-only escape hatch (no frontend)
 make macos-app      # darwin-only: dist/jev-guard.app Dock bundle (needs rsvg-convert)
+make macos-menubar  # darwin-only: dist/jev-guard-menubar.app LSUIElement notifier (systray+beeep, cgo)
 go test ./internal/<pkg>/ -run <TestName> -v  # single test
 ```
 
@@ -16,6 +17,7 @@ go test ./internal/<pkg>/ -run <TestName> -v  # single test
 - Tests use mocks (`mockJevClient`, `judge.Mock`), no network. `engine_test.go` resolves policy via `runtime.Caller`, so tests run from any directory.
 - Binaries build at repo root (`jev-guard`, gitignored). Frontend `package-lock.json` is now committed in `web/`.
 - `make macos-app` wraps `./jev-guard serve` as `dist/jev-guard.app` (gitignored; sources in `packaging/macos/`, builder in `scripts/make-macos-app.sh`). The launcher `cd`s to the checkout because Finder-launched apps get CWD=`/`, and the default policy path is CWD-relative (`configs/policy.yaml`) — without the `cd` the engine runs empty and fail-closes everything. Repo path is baked at build time: re-run after moving the checkout (or set `JEV_GUARD_REPO`). macOS bash is 3.2: no `"${empty[@]}"` under `set -u`.
+- `internal/menubar/` (client+poller portable, tested; `tray_darwin.go` behind `//go:build darwin` so Linux CI never compiles systray/cgo/GTK). `jev-guard menubar` polls `/v1/approvals/page` (default 2s), notifies once per arrival, decides via POST approve|deny. Needs `JEV_AUTH_TOKEN` when the gateway is authed (401 → auth-mismatch menu state, never silent).
 
 ## Run
 

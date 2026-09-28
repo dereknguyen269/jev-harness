@@ -3,7 +3,7 @@ PKG := ./cmd/jev-guard
 UI_DIR := web
 UI_DIST := internal/server/web/dist
 
-.PHONY: build build-go test test-go vet fmt tidy run clean doctor check ui-install ui-build policy-reset macos-app
+.PHONY: build build-go test test-go vet fmt tidy run clean doctor check ui-install ui-build policy-reset macos-app macos-menubar
 
 # Frontend (React + shadcn/ui). Requires Node 20+.
 # npm install (not ci): no lockfile is committed since it can't be
@@ -54,6 +54,13 @@ doctor: build
 macos-app: build-go
 	@if [ "$$(uname -s)" != "Darwin" ]; then echo "macos-app: macOS only (uname $$(uname -s))"; exit 1; fi
 	./scripts/make-macos-app.sh
+
+# macOS menu-bar notifier (darwin only, LSUIElement = no Dock tile):
+# polls the gateway for pending approvals, notifies, approves/denies.
+# Same binary/dist prerequisites and baked-repo caveat as macos-app.
+macos-menubar: build-go
+	@if [ "$$(uname -s)" != "Darwin" ]; then echo "macos-menubar: macOS only (uname $$(uname -s))"; exit 1; fi
+	./scripts/make-macos-menubar.sh
 
 check: ui-build fmt vet test
 

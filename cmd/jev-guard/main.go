@@ -32,6 +32,7 @@ import (
 	"github.com/dereknguyen269/jev-harness/internal/domain"
 	"github.com/dereknguyen269/jev-harness/internal/harness"
 	"github.com/dereknguyen269/jev-harness/internal/judge"
+	"github.com/dereknguyen269/jev-harness/internal/menubar"
 	"github.com/dereknguyen269/jev-harness/internal/policy"
 	"github.com/dereknguyen269/jev-harness/internal/server"
 	"github.com/dereknguyen269/jev-harness/internal/store"
@@ -67,6 +68,8 @@ func main() {
 		cmdApprovals(os.Args[2:])
 	case "approve", "deny":
 		cmdDecide(os.Args[1], os.Args[2:])
+	case "menubar":
+		cmdMenubar(os.Args[2:])
 	case "eval":
 		cmdEval(os.Args[2:])
 	case "doctor":
@@ -80,7 +83,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: jev-guard <serve|check|policy <test|reseed>|audit|approvals|approve <id>|deny <id>|eval|doctor|version>")
+	fmt.Fprintln(os.Stderr, "usage: jev-guard <serve|check|policy <test|reseed>|audit|approvals|approve <id>|deny <id>|menubar|eval|doctor|version>")
 }
 
 // loadPolicyForSeed loads the bundled policy for DB seeding: legacy rules
@@ -627,6 +630,20 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// ---- menubar (macOS status item: poll approvals, notify, decide) ----
+
+func cmdMenubar(args []string) {
+	fs := flag.NewFlagSet("menubar", flag.ExitOnError)
+	guardURL := fs.String("guard-url", envOr("JEV_GUARD_URL", "http://127.0.0.1:8787"), "Gateway base URL")
+	authToken := fs.String("auth-token", os.Getenv("JEV_AUTH_TOKEN"), "Gateway token (needed when serve runs with --auth-token)")
+	pollSecs := fs.Int("poll", 2, "Approval poll interval in seconds")
+	_ = fs.Parse(args)
+	if *pollSecs <= 0 {
+		*pollSecs = 2
+	}
+	menubar.Run(menubar.NewClient(*guardURL, *authToken), time.Duration(*pollSecs)*time.Second)
 }
 
 // ---- audit ----
