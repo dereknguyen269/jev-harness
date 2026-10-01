@@ -20,6 +20,10 @@ AI agent (Claude / OpenCode / Kiro / Codex / OpenClaw)
   ALLOW / ASK / BLOCK
 ```
 
+Interactive walkthrough: [`docs/jev-guard-how-it-works.html`](docs/jev-guard-how-it-works.html) —
+open it in a browser for the full request pipeline (lanes, approval gates,
+fail-closed rules). Source: [`docs/jev-guard-flow.workflow.json`](docs/jev-guard-flow.workflow.json).
+
 ## Quick Start
 
 ```bash
@@ -96,7 +100,7 @@ the offline CLI commands. A first-run tour explains each tab.
 | Groups | Group name + description definitions. Rules keep working if their group is deleted. |
 | Categories | Category name + description definitions (seeded from rule usage). Same delete semantics as groups. |
 | Users | Attribution-only users; each gets an API key that also works as a dashboard login. |
-| Approvals | Pending `approval_required` decisions — approve/deny. Persisted to SQLite when `--db` is up (same record as the `approve|deny` CLI and the OpenCode plugin poll, so any channel unblocks the others); in-memory only in YAML-only mode. |
+| Approvals | Pending `approval_required` decisions — risk score + level with the reason shown in an approve/deny confirm dialog. Persisted to SQLite when `--db` is up (same record as the tray, the `approve|deny` CLI, and the OpenCode plugin poll, so any channel unblocks the others); in-memory only in YAML-only mode. |
 | Audit | Every decision with the exact command/path, risk, and rule. Filter + pagination. |
 | Jev API | Recent outbound AI calls: status, latency, input/output tokens. SQLite-persisted when `--db` is up (survives restarts), otherwise in-memory. |
 | Settings | Default approval TTL (5s–1h, admin only; applies live, no restart). |
@@ -121,6 +125,7 @@ in YAML-only mode (no `--db`).
 
 `make build|test|vet|fmt|run|clean`, `make check` (= ui-build + fmt + vet + test).
 `make build-go|test-go` skip the frontend (fails loudly if `web/dist/` is missing).
+`make app` (= `build-app`) builds the full unified macOS app end to end.
 
 ## HTTP API
 
@@ -150,10 +155,17 @@ curl -X POST http://127.0.0.1:8787/v1/check \
   "confidence": 1.0,
   "source": "policy",
   "policy_id": "root-delete",
-  "reason": "Blocked by rule root-delete: rm -rf /",
+  "reason": "Blocked by rule root-delete [risk=1.00 CRITICAL]: Irreversible root delete — matched: rm -rf /",
   "request_approval": false
 }
 ```
+
+Reasons always explain the risk: policy verdicts carry the rule id,
+risk score + level (`READ/LOW/MUTATION/PRIVILEGED/CRITICAL`), the rule
+description, and the matched command/path; Jev verdicts carry the score,
+level, confidence, and the judge's details. The same text surfaces
+wherever a human decides — dashboard confirm dialog, menu-bar tray,
+and `approvals` / `approve|deny` CLI.
 
 `approval_required` responses additionally carry `approval_id` + `expires_in` (30s).
 
@@ -309,7 +321,7 @@ Guard endpoint/timeout: `JEV_GUARD_URL` (default `http://127.0.0.1:8787`),
 
 Approval flow: `approval_required` carries `approval_id` + `expires_in`.
 The OpenCode plugin polls `GET /v1/approvals/page` until a human decides
-via dashboard, `jev-guard approve|deny`, or the curl commands it prints —
+via dashboard, tray menu, `jev-guard approve|deny`, or the curl commands it prints —
 any channel unblocks the others. When the guard runs with `--auth-token`,
 set the same token as `JEV_AUTH_TOKEN` in the agent process env or every
 approval poll 401s and the plugin fails closed on timeout. All adapters
@@ -331,6 +343,8 @@ LISTEN=127.0.0.1:8787
 JEV_DB=~/.hermes/guard/jev.db
 JEV_AUTH_TOKEN=...
 JEV_APPROVAL_TTL=30    # default approval TTL in seconds (5-3600)
+JEV_TRAY=1             # serve --tray in-process menu bar (macOS; JEV_GUARD_TRAY alias, 0 disables)
+JEV_TRAY_POLL=2        # tray poll interval in seconds
 ```
 
 Key priority: `--jev-api-key` flag > `JEV_API_KEY` > `TYPESAFE_API_KEY` >
