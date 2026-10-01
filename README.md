@@ -20,9 +20,10 @@ AI agent (Claude / OpenCode / Kiro / Codex / OpenClaw)
   ALLOW / ASK / BLOCK
 ```
 
-Interactive walkthrough: [`docs/jev-guard-how-it-works.html`](docs/jev-guard-how-it-works.html) —
-open it in a browser for the full request pipeline (lanes, approval gates,
-fail-closed rules). Source: [`docs/jev-guard-flow.workflow.json`](docs/jev-guard-flow.workflow.json).
+![Jev Guard request pipeline: tool call → normalize → policy → cache → Jev judgment → resolve, with approval gate and allow/block verdicts](docs/jev-guard-how-it-works.png)
+
+Interactive version (pan/zoom, trace, search): [`docs/jev-guard-how-it-works.html`](docs/jev-guard-how-it-works.html).
+Source: [`docs/jev-guard-flow.workflow.json`](docs/jev-guard-flow.workflow.json).
 
 ## Quick Start
 
