@@ -25,12 +25,13 @@ func (e *ErrUnauthorized) Error() string {
 
 // Approval is the JSON subset the tray needs from /v1/approvals/page.
 type Approval struct {
-	ID        string    `json:"id"`
-	Tool      string    `json:"tool"`
-	Risk      float64   `json:"risk"`
-	Reason    string    `json:"reason"`
-	Status    string    `json:"status"`
-	ExpiresAt time.Time `json:"expires_at"`
+	ID        string         `json:"id"`
+	Tool      string         `json:"tool"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Risk      float64        `json:"risk"`
+	Reason    string         `json:"reason"`
+	Status    string         `json:"status"`
+	ExpiresAt time.Time      `json:"expires_at"`
 }
 
 // Pending reports whether the approval still needs a human.
@@ -42,6 +43,43 @@ func (a Approval) ShortID() string {
 		return a.ID[:8]
 	}
 	return a.ID
+}
+
+// RiskLevel classifies the score for the approve/deny prompt (mirrors
+// domain.RiskFromScore without importing domain from the tray).
+func RiskLevel(risk float64) string {
+	switch {
+	case risk >= 0.95:
+		return "CRITICAL"
+	case risk >= 0.70:
+		return "PRIVILEGED"
+	case risk >= 0.40:
+		return "MUTATION"
+	case risk >= 0.15:
+		return "LOW"
+	default:
+		return "READ"
+	}
+}
+
+// FormatArgs renders the attempted action for the decision prompt:
+// command > path/file > raw JSON. Always non-empty for display.
+func FormatArgs(a Approval) string {
+	if len(a.Arguments) == 0 {
+		return "—"
+	}
+	for _, k := range []string{"command", "cmd", "commandLine", "path", "file", "file_path", "url"} {
+		if v, ok := a.Arguments[k]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	b, err := json.Marshal(a.Arguments)
+	if err != nil || len(b) == 0 {
+		return "—"
+	}
+	return string(b)
 }
 
 // Page mirrors server.ApprovalsPage (approvals newest-first + live count).

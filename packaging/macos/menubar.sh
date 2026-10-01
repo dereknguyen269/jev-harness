@@ -1,4 +1,9 @@
 #!/bin/bash
+# DEPRECATED: the standalone jev-guard-menubar.app bundle is retired.
+# dist/jev-guard.app is now the single unified build (gateway + menu-bar
+# tray via `serve --tray`). This file is unused and can be deleted.
+# (Kept because the sandbox guard blocks file deletion in this session.)
+#
 # Jev Guard menu-bar notifier launcher (CFBundleExecutable).
 #
 # __REPO_ROOT__ is baked in by scripts/make-macos-menubar.sh. Override with

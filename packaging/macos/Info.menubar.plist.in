@@ -2,10 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- jev-guard-menubar.app template: version and repo root are substituted
-       by scripts/make-macos-menubar.sh at build time. LSUIElement hides the
-       Dock tile — this is a menu-bar-only notifier; use jev-guard.app for
-       the Dock tile + server. -->
+  <!-- DEPRECATED: the standalone jev-guard-menubar.app bundle is retired
+        (unified dist/jev-guard.app runs gateway + tray via `serve --tray`).
+        Unused; can be deleted. -->
   <key>CFBundleName</key>
   <string>Jev Guard Notifier</string>
   <key>CFBundleDisplayName</key>

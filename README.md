@@ -52,33 +52,35 @@ With dashboard auth (off by default):
 ./jev-guard serve --auth-token s3cret
 ```
 
-## macOS Dock app
+## macOS app (unified: Dock + menu bar)
 
 ```bash
-make macos-app          # darwin-only; needs rsvg-convert (brew install librsvg)
-open dist/jev-guard.app # Dock tile + auto-opens the dashboard
+make app              # darwin-only; full pipeline: frontend + binary + bundle (needs rsvg-convert)
+open dist/jev-guard.app # Dock tile + shield menu icon, auto-opens the dashboard
 ```
 
-This wraps `./jev-guard serve` as `jev-guard.app` (sources in
-`packaging/macos/`, icon in `packaging/macos/icon.svg`). Quitting the app
-stops the gateway. Copy it to `/Applications` to keep it; the app points
-at this checkout, so re-run `make macos-app` after moving the repo (or
-set `JEV_GUARD_REPO`). `JEV_GUARD_OPEN_DASHBOARD=0` disables auto-open.
+This wraps `./jev-guard serve --tray` as a single `jev-guard.app` (sources
+in `packaging/macos/`, icon in `packaging/macos/icon.svg`): one app owns
+the Dock tile, the shield menu icon with pending count, and the native
+approval alerts (approve/deny right in the menu — same record as dashboard
++ `approve|deny` CLI). Quitting the app stops the gateway. Copy it to
+`/Applications` to keep it; the app points at this checkout, so re-run
+`make macos-app` after moving the repo (or set `JEV_GUARD_REPO`).
+`JEV_GUARD_OPEN_DASHBOARD=0` disables auto-open, `JEV_GUARD_TRAY=0`
+disables the tray (gateway only). `make macos-menubar` is a deprecated
+alias for `make macos-app`. When the gateway runs with `--auth-token`,
+the in-process tray reuses it automatically (no extra env needed).
 
-## macOS menu bar notifier
+Standalone notifier (gateway on another host/terminal):
 
 ```bash
-make macos-menubar                 # darwin-only; LSUIElement bundle (no Dock tile)
-open dist/jev-guard-menubar.app    # shield icon, pending count, native alerts
-# ...or in a terminal: ./jev-guard menubar [--guard-url URL] [--poll SECS]
+./jev-guard menubar [--guard-url URL] [--poll SECS]  # needs JEV_AUTH_TOKEN when serve uses --auth-token
 ```
 
 Polls the gateway for pending approvals (default every 2s), posts a
 native notification per new arrival, and offers Approve/Deny right in the
-menu (same record as dashboard + `approve|deny` CLI). When the gateway
-runs with `--auth-token`, the notifier needs the same token as
-`JEV_AUTH_TOKEN` or the menu shows an auth-mismatch state. Needs the
-gateway up — it shows "Guard offline" otherwise.
+menu (same record as dashboard + `approve|deny` CLI). Shows
+"auth mismatch" / "Guard offline" states instead of failing silently.
 
 ## Dashboard
 
@@ -106,7 +108,7 @@ in YAML-only mode (no `--db`).
 
 | Command | Purpose |
 |---------|---------|
-| `jev-guard serve [--listen ADDR] [--policy FILE] [--profile NAME] [--group G] [--db PATH] [--auth-token TOKEN] [--approval-ttl SECS] [--reseed]` | Run the gateway. Policy: explicit `--policy`/`POLICY_PATH` wins, then `--profile` bundle, then `configs/policy.yaml`. `--reseed` merges bundled defaults into the DB on startup. |
+| `jev-guard serve [--listen ADDR] [--policy FILE] [--profile NAME] [--group G] [--db PATH] [--auth-token TOKEN] [--approval-ttl SECS] [--reseed] [--tray] [--tray-poll SECS]` | Run the gateway. Policy: explicit `--policy`/`POLICY_PATH` wins, then `--profile` bundle, then `configs/policy.yaml`. `--reseed` merges bundled defaults into the DB on startup. `--tray` (macOS) also runs the menu-bar tray in-process: the unified `jev-guard.app` mode. |
 | `jev-guard check --tool T --command C [--path P] [--env E] [--business B] [--task T] [--category C]` | One-shot evaluation (no audit). |
 | `jev-guard policy test [--policy FILE]` | Run bundled fixtures against policy. |
 | `jev-guard policy reseed [--mode merge|replace] [--force]` | Merge restructured YAML defaults into the DB (merge keeps custom rules; replace wipes policy tables and needs `--force`). Users survive both. |

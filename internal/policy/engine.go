@@ -513,13 +513,17 @@ func (e *Engine) CheckWithContext(ta ToolAction, ctx RequestContext) (DecisionRe
 			}
 		}
 		if matched {
+			desc := ""
+			if r.Description != "" {
+				desc = ": " + r.Description
+			}
 			switch strings.ToLower(r.Action) {
 			case "block":
 				return DecisionResponse{
 					Decision:        Block,
 					Risk:            1.0,
 					Confidence:      1.0,
-					Reason:          fmt.Sprintf("Blocked by rule %s: %s", r.ID, target),
+					Reason:          fmt.Sprintf("Blocked by rule %s [risk=1.00 CRITICAL]%s — matched: %s", r.ID, desc, target),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: false,
 				}, true
@@ -528,7 +532,7 @@ func (e *Engine) CheckWithContext(ta ToolAction, ctx RequestContext) (DecisionRe
 					Decision:        ApprovalRequired,
 					Risk:            0.8,
 					Confidence:      0.9,
-					Reason:          fmt.Sprintf("Approval required by rule %s: %s", r.ID, target),
+					Reason:          fmt.Sprintf("Approval required by rule %s [risk=0.80 PRIVILEGED]%s — matched: %s", r.ID, desc, target),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: true,
 					ApprovalTimeout: r.ApprovalTimeout,
@@ -538,7 +542,7 @@ func (e *Engine) CheckWithContext(ta ToolAction, ctx RequestContext) (DecisionRe
 					Decision:        Allow,
 					Risk:            0.0,
 					Confidence:      1.0,
-					Reason:          fmt.Sprintf("Allowed by rule %s", r.ID),
+					Reason:          fmt.Sprintf("Allowed by rule %s%s", r.ID, desc),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: false,
 				}, true

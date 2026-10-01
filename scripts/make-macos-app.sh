@@ -52,5 +52,5 @@ chmod +x "$APP/Contents/MacOS/jev-guard-launcher"
 codesign --force --deep -s - "$APP" >/dev/null
 touch "$APP"  # nudge Finder/Dock icon cache
 
-echo "Built $APP (v$VERSION, repo=$REPO_ROOT)"
+echo "Built $APP (v$VERSION, repo=$REPO_ROOT, unified gateway+tray)"
 echo "Run: open $APP   (copy to /Applications to keep it)"

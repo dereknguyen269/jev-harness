@@ -3,8 +3,11 @@
 <plist version="1.0">
 <dict>
   <!-- jev-guard.app template: version and repo root are substituted
-       by scripts/make-macos-app.sh at build time. LSUIElement is deliberately
-       absent so the running gateway owns a Dock tile. -->
+        by scripts/make-macos-app.sh at build time. Unified bundle: the
+        launcher runs `serve --tray`, so one app owns the Dock tile AND the
+        menu-bar shield (pending count, native alerts, approve/deny).
+        LSUIElement stays absent on purpose — the gateway keeps its Dock
+        tile; the tray icon is extra, not instead. -->
   <key>CFBundleName</key>
   <string>Jev Guard</string>
   <key>CFBundleDisplayName</key>

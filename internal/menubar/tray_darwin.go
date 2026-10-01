@@ -137,7 +137,7 @@ func (a *app) refresh() {
 	}
 	for _, ap := range arrivals {
 		_ = beeep.Notify("Jev Guard — approval required",
-			fmt.Sprintf("%s: %s", ap.Tool, oneLine(ap.Reason, 150)), "")
+			fmt.Sprintf("%s [%.2f %s]: %s — %s", ap.Tool, ap.Risk, RiskLevel(ap.Risk), oneLine(ap.Reason, 120), oneLine(FormatArgs(ap), 60)), "")
 	}
 	a.setIdle("", pending, len(pending))
 }
@@ -170,7 +170,9 @@ func (a *app) setIdle(status string, pending []Approval, n int) {
 		if i < len(shown) {
 			ap := shown[i]
 			s.id = ap.ID
-			s.parent.SetTitle(fmt.Sprintf("%s — %s", ap.Tool, oneLine(ap.Reason, 60)))
+			s.parent.SetTitle(fmt.Sprintf("%s [%.2f %s] — %s", ap.Tool, ap.Risk, RiskLevel(ap.Risk), oneLine(ap.Reason, 60)))
+			// Tooltip carries the full why + what for the approve/deny decision.
+			s.parent.SetTooltip(fmt.Sprintf("%s\n%s\n%s", ap.Tool, ap.Reason, FormatArgs(ap)))
 			s.parent.Enable()
 			s.approve.Enable()
 			s.deny.Enable()

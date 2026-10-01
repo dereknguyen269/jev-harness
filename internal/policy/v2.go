@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -383,10 +384,23 @@ func v2Result(r V2Rule, risk float64, target string) domain.PolicyResult {
 	if rc == "" {
 		rc = r.ID
 	}
-	reason := "Matched policy " + r.ID
-	if target != "" {
-		reason += ": " + target
+	level := domain.RiskFromScore(risk)
+	var sb strings.Builder
+	if action == domain.Block {
+		sb.WriteString("Blocked by policy " + r.ID)
+	} else if action == domain.ApprovalRequired {
+		sb.WriteString("Approval required by policy " + r.ID)
+	} else {
+		sb.WriteString("Matched policy " + r.ID)
 	}
+	sb.WriteString(fmt.Sprintf(" [risk=%.2f %s]", risk, level.String()))
+	if r.Description != "" {
+		sb.WriteString(": " + r.Description)
+	}
+	if target != "" {
+		sb.WriteString(" — matched: " + target)
+	}
+	reason := sb.String()
 	return domain.PolicyResult{
 		Matched: true,
 		Final:   true,

@@ -17,9 +17,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -84,6 +86,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: jev-guard <serve|check|policy <test|reseed>|audit|approvals|approve <id>|deny <id>|menubar|eval|doctor|version>")
+	fmt.Fprintln(os.Stderr, "  serve --tray: run gateway + menu-bar tray in one process (unified macOS app)")
 }
 
 // loadPolicyForSeed loads the bundled policy for DB seeding: legacy rules
@@ -202,6 +205,8 @@ func cmdServe(args []string) {
 	authToken := fs.String("auth-token", os.Getenv("JEV_AUTH_TOKEN"), "Dashboard auth token (empty = auth disabled)")
 	approvalTTL := fs.Int("approval-ttl", envOrInt("JEV_APPROVAL_TTL", domain.DefaultApprovalTTLSeconds), "Default approval TTL in seconds (DB setting overrides at runtime)")
 	reseed := fs.Bool("reseed", false, "Merge bundled YAML defaults into the DB on startup (adopts restructures, keeps custom rules)")
+	tray := fs.Bool("tray", parseOnOff(firstEnv("JEV_TRAY", "JEV_GUARD_TRAY"), false), "Run menu-bar tray in-process (macOS: gateway + notifier in one app)")
+	trayPoll := fs.Int("tray-poll", envOrInt("JEV_TRAY_POLL", 2), "Tray poll interval in seconds (with --tray)")
 	_ = fs.Parse(args)
 
 	groups := activeGroups(*groupFlag)
@@ -318,6 +323,32 @@ func cmdServe(args []string) {
 		log.Print("warning: dashboard auth disabled (set --auth-token or JEV_AUTH_TOKEN to protect the dashboard)")
 	}
 	srv := &http.Server{Addr: *listen, Handler: gw.Router()}
+	if *tray {
+		// Unified desktop mode: gateway + menu-bar tray in one process
+		// (single jev-guard.app). The tray loop owns the main thread on
+		// macOS (systray requirement); the HTTP server runs behind it and
+		// shuts down when the tray quits. Linux builds have only the
+		// menubar stub, so --tray is darwin-only.
+		if runtime.GOOS != "darwin" {
+			log.Fatalf("serve --tray: macOS only")
+		}
+		if *trayPoll <= 0 {
+			*trayPoll = 2
+		}
+		go func() {
+			log.Printf("jev-guard %s listening on %s (profile=%s policy=%s)", version, *listen, *profile, *policyPath)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
+		trayURL := trayBaseURL(*listen)
+		log.Printf("tray enabled: polling %s every %ds", trayURL, *trayPoll)
+		menubar.Run(menubar.NewClient(trayURL, *authToken), time.Duration(*trayPoll)*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+		return
+	}
 	go func() {
 		log.Printf("jev-guard %s listening on %s (profile=%s policy=%s)", version, *listen, *profile, *policyPath)
 		log.Fatal(srv.ListenAndServe())
@@ -561,9 +592,9 @@ func cmdApprovals(args []string) {
 	}
 	fmt.Printf("%d approvals (%d pending), showing %d\n", total, pending, len(items))
 	for _, a := range items {
-		fmt.Printf("%s %-9s %-12s risk=%.2f expires=%s %s\n",
-			a.ID, a.Status, a.Tool, a.Risk,
-			a.ExpiresAt.Format(time.RFC3339), firstLine(a.Reason))
+		fmt.Printf("%s %-9s %-12s risk=%.2f (%s) expires=%s\n  why: %s\n  what: %s\n",
+			a.ID, a.Status, a.Tool, a.Risk, domain.RiskFromScore(a.Risk),
+			a.ExpiresAt.Format(time.RFC3339), firstLine(a.Reason), approvalArgs(a))
 	}
 }
 
@@ -622,7 +653,28 @@ func cmdDecide(cmd string, args []string) {
 	if approve {
 		verb = "approved"
 	}
-	fmt.Printf("%s %s (%s): %s on %s\n", verb, decided.ID, decided.Status, decided.Tool, firstLine(decided.Reason))
+	fmt.Printf("%s %s (%s): %s risk=%.2f (%s)\n  why: %s\n  what: %s\n", verb, decided.ID, decided.Status, decided.Tool, decided.Risk, domain.RiskFromScore(decided.Risk), firstLine(decided.Reason), approvalArgs(decided))
+}
+
+func approvalArgs(a domain.Approval) string {
+	for _, k := range []string{"command", "cmd", "commandLine", "path", "file", "file_path", "url"} {
+		if v, ok := a.Arguments[k]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				if i := strings.IndexByte(s, '\n'); i >= 0 {
+					return s[:i]
+				}
+				return s
+			}
+		}
+	}
+	if len(a.Arguments) == 0 {
+		return "—"
+	}
+	b, err := json.Marshal(a.Arguments)
+	if err != nil {
+		return "—"
+	}
+	return string(b)
 }
 
 func firstLine(s string) string {
@@ -881,6 +933,33 @@ func envOrInt(k string, d int) int {
 		}
 	}
 	return d
+}
+
+// parseOnOff parses 1/true/yes/on and 0/false/no/off (case-insensitive);
+// anything else (including "") returns the default.
+func parseOnOff(s string, d bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return d
+	}
+}
+
+// trayBaseURL derives the in-process tray poll URL from the serve listen
+// address: wildcard hosts (":PORT", "0.0.0.0", "::") become 127.0.0.1 so
+// the tray talks to the local gateway regardless of bind address.
+func trayBaseURL(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "http://" + listen
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func firstEnv(keys ...string) string {
