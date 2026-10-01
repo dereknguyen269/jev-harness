@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/dereknguyen269/jev-harness/internal/domain"
@@ -41,6 +42,9 @@ type Harness struct {
 	Approvals   ApprovalIssuer
 	Thresholds  domain.ConfidenceThresholds
 	ApprovalTTL time.Duration
+	// ttlMu guards ApprovalTTL: the dashboard settings endpoint can change
+	// the default at runtime while Evaluate reads it concurrently.
+	ttlMu sync.RWMutex
 }
 
 func (h *Harness) thresholds() domain.ConfidenceThresholds {
@@ -50,11 +54,27 @@ func (h *Harness) thresholds() domain.ConfidenceThresholds {
 	return domain.DefaultThresholds()
 }
 
-func (h *Harness) approvalTTL() time.Duration {
-	if h.ApprovalTTL > 0 {
-		return h.ApprovalTTL
+// SetApprovalTTLSeconds replaces the default approval TTL at runtime
+// (dashboard settings). The value is clamped to the supported bounds.
+func (h *Harness) SetApprovalTTLSeconds(secs int) {
+	h.ttlMu.Lock()
+	defer h.ttlMu.Unlock()
+	h.ApprovalTTL = time.Duration(domain.ClampApprovalTTLSeconds(secs)) * time.Second
+}
+
+// ApprovalTTLSeconds reports the current default approval TTL in seconds.
+func (h *Harness) ApprovalTTLSeconds() int {
+	h.ttlMu.RLock()
+	defer h.ttlMu.RUnlock()
+	ttl := h.ApprovalTTL
+	if ttl <= 0 {
+		ttl = time.Duration(domain.DefaultApprovalTTLSeconds) * time.Second
 	}
-	return 30 * time.Second
+	return int(ttl.Seconds())
+}
+
+func (h *Harness) approvalTTL() time.Duration {
+	return time.Duration(h.ApprovalTTLSeconds()) * time.Second
 }
 
 // Evaluate runs the full pipeline. req.Tool.Name may be agent-specific;
@@ -132,6 +152,9 @@ func (h *Harness) record(req domain.ToolRequest, normalized domain.NormalizedReq
 		Timestamp:      time.Now(),
 		Agent:          req.Agent.Name,
 		Tool:           string(normalized.Canonical),
+		Command:        normalized.Command,
+		Path:           normalized.Path,
+		Resource:       normalized.Resource,
 		PolicyDecision: decision.PolicyID,
 		JevDecision:    jevDecision,
 		FinalDecision:  string(decision.Decision),
@@ -147,7 +170,10 @@ func (h *Harness) maybeIssueApproval(req domain.ToolRequest, decision domain.Dec
 	if decision.Decision != domain.ApprovalRequired || h.Approvals == nil {
 		return decision
 	}
-	ttl := h.approvalTTL()
+	// A positive per-rule timeout (matched policy) wins over the default;
+	// both sides are clamped to the supported bounds.
+	ttl := time.Duration(domain.ResolveApprovalTTLSeconds(
+		decision.ApprovalTimeoutSecs, h.ApprovalTTLSeconds())) * time.Second
 	decision.ApprovalID = h.Approvals.Create(req.ID, req.Tool.Name, req.Tool.Args, decision.Risk, decision.Reason, ttl)
 	decision.ExpiresIn = int(ttl.Seconds())
 	decision.RequestApproval = true

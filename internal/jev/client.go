@@ -23,6 +23,10 @@ type Client struct {
 	client    *http.Client
 	baseURL   string
 	provider  string
+	calls     *CallLog
+	// persist, when set, receives every logged call. Set once before
+	// serving (see SetPersistence); logCall only ever reads it.
+	persist CallPersistence
 }
 
 func NewClient(apiKey, baseURL, model, provider string) *Client {
@@ -56,6 +60,53 @@ func NewClient(apiKey, baseURL, model, provider string) *Client {
 		baseURL:   baseURL,
 		provider:  provider,
 		client:    &http.Client{Timeout: 10 * time.Second},
+		calls:     NewCallLog(200),
+	}
+}
+
+// SetPersistence attaches (or, with nil, detaches) the SQLite backend.
+// Callers must set it before serving; changing it mid-flight races.
+func (c *Client) SetPersistence(p CallPersistence) {
+	c.persist = p
+}
+
+// Calls returns recent API calls, newest first, up to limit (<=0 means all).
+func (c *Client) Calls(limit int) []Call {
+	if c.calls == nil {
+		return nil
+	}
+	return c.calls.List(limit)
+}
+
+// logCall records one outbound request. err == nil means status "ok".
+func (c *Client) logCall(start time.Time, httpStatus int, err error, in, out int) {
+	if c.calls == nil {
+		return
+	}
+	status := "ok"
+	msg := ""
+	if err != nil {
+		status = "error"
+		msg = err.Error()
+		if len(msg) > 500 {
+			msg = msg[:500] + "…"
+		}
+	}
+	call := Call{
+		Timestamp:    time.Now().UTC(),
+		Model:        c.model,
+		Endpoint:     c.baseURL,
+		Status:       status,
+		HTTPStatus:   httpStatus,
+		LatencyMS:    time.Since(start).Milliseconds(),
+		InputTokens:  in,
+		OutputTokens: out,
+		Error:        msg,
+	}
+	c.calls.Add(call)
+	// Best-effort: call logging must never break judging.
+	if c.persist != nil {
+		_ = c.persist.InsertJevCall(call)
 	}
 }
 
@@ -71,8 +122,56 @@ func detectModelType(model, provider string) string {
 
 type decisionRequest struct {
 	Model     string         `json:"model"`
-	State     map[string]any `json:"state"`
+	State     string         `json:"state"`
 	Questions map[string]any `json:"questions"`
+}
+
+// stateToString encodes the structured tool state as a string because the
+// /v1/systemone API expects "state" to be a string (sending the raw object
+// yields "request invalid").
+func stateToString(state map[string]any) string {
+	if state == nil {
+		return ""
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// questionPayload builds one question entry in the API shape:
+// {"type": ..., "instructions": ...} with "criteria" omitted when empty.
+// Types are passed through verbatim ("noul" stays "noul"). Score criteria
+// must be a list of "level: description" strings (a map yields 422
+// "Input should be a valid list"); other types pass criteria through as-is.
+func questionPayload(q policy.Question) map[string]any {
+	qData := map[string]any{
+		"type":         q.Type,
+		"instructions": q.Instructions,
+	}
+	if len(q.Criteria) == 0 {
+		return qData
+	}
+	if q.Type == "score" {
+		qData["criteria"] = scoreCriteriaToArray(q.Criteria)
+		return qData
+	}
+	qData["criteria"] = q.Criteria
+	return qData
+}
+
+func scoreCriteriaToArray(criteria map[string]any) []string {
+	keys := make([]string, 0, len(criteria))
+	for k := range criteria {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	result := make([]string, 0, len(keys))
+	for _, k := range keys {
+		result = append(result, fmt.Sprintf("%s: %v", k, criteria[k]))
+	}
+	return result
 }
 
 type decisionResponse struct {
@@ -94,9 +193,11 @@ type evalResponse struct {
 type evalAnswer struct {
 	Type          string             `json:"type"`
 	Probability   *float64           `json:"probability,omitempty"`
+	Noul          *float64           `json:"noul,omitempty"`
 	Choice        string             `json:"choice,omitempty"`
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
 	Score         *float64           `json:"score,omitempty"`
+	Confidence    float64            `json:"confidence,omitempty"`
 }
 
 type chatCompletionResponse struct {
@@ -105,6 +206,11 @@ type chatCompletionResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 type openrouterDecisionsResponse struct {
@@ -144,24 +250,19 @@ func (c *Client) Evaluate(ctx context.Context, state map[string]any, questions m
 	}
 }
 
-func (c *Client) evaluateEval(ctx context.Context, state map[string]any, questions map[string]policy.Question) (map[string]policy.Answer, error) {
+func (c *Client) evaluateEval(ctx context.Context, state map[string]any, questions map[string]policy.Question) (result map[string]policy.Answer, err error) {
+	start := time.Now()
+	var in, out, httpStatus int
+	defer func() { c.logCall(start, httpStatus, err, in, out) }()
+
 	qs := make(map[string]any, len(questions))
 	for k, q := range questions {
-		qData := map[string]any{
-			"type":         normalizeEvalType(q.Type),
-			"instructions": q.Instructions,
-		}
-		if q.Type == "score" && q.Criteria != nil {
-			qData["criteria"] = scoreCriteriaToArray(q.Criteria)
-		} else {
-			qData["criteria"] = q.Criteria
-		}
-		qs[k] = qData
+		qs[k] = questionPayload(q)
 	}
 
 	req := decisionRequest{
 		Model:     c.model,
-		State:     state,
+		State:     stateToString(state),
 		Questions: qs,
 	}
 
@@ -173,89 +274,99 @@ func (c *Client) evaluateEval(ctx context.Context, state map[string]any, questio
 	var respBody []byte
 	switch c.provider {
 	case "openrouter-eval":
-		respBody, err = c.postOpenRouterEval(ctx, body)
+		respBody, httpStatus, err = c.postOpenRouterEval(ctx, body)
 	default:
-		respBody, err = c.postToEndpoint(ctx, body)
+		respBody, httpStatus, err = c.postToEndpoint(ctx, body)
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	var dr evalResponse
-	if err := json.Unmarshal(respBody, &dr); err != nil {
+	if uerr := json.Unmarshal(respBody, &dr); uerr != nil {
 		// Try openrouter format
 		var orResp openrouterDecisionsResponse
 		if err2 := json.Unmarshal(respBody, &orResp); err2 != nil {
-			return nil, fmt.Errorf("decode eval response: %w (body: %.200s)", err, string(respBody))
+			return nil, fmt.Errorf("decode eval response: %w (body: %.200s)", uerr, string(respBody))
 		}
-		result := make(map[string]policy.Answer)
+		in, out = orResp.Metadata.InputTokens, orResp.Metadata.OutputTokens
+		result = make(map[string]policy.Answer)
 		for k, ans := range orResp.Answers {
 			result[k] = openrouterAnswerToPolicy(ans)
 		}
 		return result, nil
 	}
 
-	result := make(map[string]policy.Answer)
+	in, out = dr.Usage.InputTokens, dr.Usage.OutputTokens
+	result = make(map[string]policy.Answer)
 	for k, ans := range dr.Answers {
 		result[k] = evalAnswerToPolicy(ans)
 	}
 	return result, nil
 }
 
-func (c *Client) postToEndpoint(ctx context.Context, body []byte) ([]byte, error) {
+func (c *Client) postToEndpoint(ctx context.Context, body []byte) ([]byte, int, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 	c.setHeaders(httpReq)
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("Jev HTTP request: %w", err)
+		return nil, 0, fmt.Errorf("Jev HTTP request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Jev returned %d: %s", resp.StatusCode, string(raw))
+		return nil, resp.StatusCode, fmt.Errorf("Jev returned %d: %s", resp.StatusCode, string(raw))
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return raw, resp.StatusCode, nil
 }
 
-func (c *Client) postOpenRouterEval(ctx context.Context, body []byte) ([]byte, error) {
+func (c *Client) postOpenRouterEval(ctx context.Context, body []byte) ([]byte, int, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, 0, fmt.Errorf("create request: %w", err)
 	}
 	c.setHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("OpenRouter HTTP request: %w", err)
+		return nil, 0, fmt.Errorf("OpenRouter HTTP request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, string(raw))
+		return nil, resp.StatusCode, fmt.Errorf("OpenRouter returned %d: %s", resp.StatusCode, string(raw))
 	}
-	return io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	return raw, resp.StatusCode, nil
 }
 
-func (c *Client) evaluateDefault(ctx context.Context, state map[string]any, questions map[string]policy.Question) (map[string]policy.Answer, error) {
+func (c *Client) evaluateDefault(ctx context.Context, state map[string]any, questions map[string]policy.Question) (result map[string]policy.Answer, err error) {
+	start := time.Now()
+	var in, out, httpStatus int
+	defer func() { c.logCall(start, httpStatus, err, in, out) }()
+
 	qs := make(map[string]any, len(questions))
 	for k, q := range questions {
-		qs[k] = map[string]any{
-			"type":         normalizeEvalType(q.Type),
-			"instructions": q.Instructions,
-			"criteria":     q.Criteria,
-		}
+		qs[k] = questionPayload(q)
 	}
 
 	req := decisionRequest{
 		Model:     c.model,
-		State:     state,
+		State:     stateToString(state),
 		Questions: qs,
 	}
 
@@ -264,7 +375,7 @@ func (c *Client) evaluateDefault(ctx context.Context, state map[string]any, ques
 		return nil, fmt.Errorf("marshal decision request: %w", err)
 	}
 
-	respBody, err := c.postToEndpoint(ctx, body)
+	respBody, httpStatus, err := c.postToEndpoint(ctx, body)
 	if err != nil {
 		return nil, err
 	}
@@ -273,10 +384,15 @@ func (c *Client) evaluateDefault(ctx context.Context, state map[string]any, ques
 	if err := json.Unmarshal(respBody, &dr); err != nil {
 		return nil, fmt.Errorf("decode Jev response: %w", err)
 	}
+	in, out = dr.Usage.InputTokens, dr.Usage.OutputTokens
 	return dr.Answers, nil
 }
 
-func (c *Client) evaluateChat(ctx context.Context, state map[string]any, questions map[string]policy.Question) (map[string]policy.Answer, error) {
+func (c *Client) evaluateChat(ctx context.Context, state map[string]any, questions map[string]policy.Question) (result map[string]policy.Answer, err error) {
+	start := time.Now()
+	var in, out, httpStatus int
+	defer func() { c.logCall(start, httpStatus, err, in, out) }()
+
 	prompt := buildPrompt(state, questions)
 
 	reqBody, err := json.Marshal(map[string]any{
@@ -301,6 +417,7 @@ func (c *Client) evaluateChat(ctx context.Context, state map[string]any, questio
 	}
 	defer resp.Body.Close()
 
+	httpStatus = resp.StatusCode
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("Jev returned %d: %s", resp.StatusCode, string(raw))
@@ -310,6 +427,7 @@ func (c *Client) evaluateChat(ctx context.Context, state map[string]any, questio
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
 		return nil, fmt.Errorf("decode chat response: %w", err)
 	}
+	in, out = chatResp.Usage.PromptTokens, chatResp.Usage.CompletionTokens
 
 	if len(chatResp.Choices) == 0 {
 		return nil, fmt.Errorf("no choices in response")
@@ -318,31 +436,13 @@ func (c *Client) evaluateChat(ctx context.Context, state map[string]any, questio
 	return parseChatAnswers(chatResp.Choices[0].Message.Content, questions)
 }
 
-func normalizeEvalType(t string) string {
-	switch t {
-	case "noul":
-		return "boolean"
-	default:
-		return t
-	}
-}
-
-func scoreCriteriaToArray(criteria map[string]any) []string {
-	keys := make([]string, 0, len(criteria))
-	for k := range criteria {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	result := make([]string, 0, len(keys))
-	for _, k := range keys {
-		result = append(result, fmt.Sprintf("%s: %v", k, criteria[k]))
-	}
-	return result
-}
-
 func evalAnswerToPolicy(ans evalAnswer) policy.Answer {
 	policyAns := policy.Answer{Type: ans.Type}
-	if ans.Probability != nil {
+	// The API returns noul answers as {"type":"noul","noul":<p>};
+	// older shapes used "probability". Accept both.
+	if ans.Noul != nil {
+		policyAns.Noul = ans.Noul
+	} else if ans.Probability != nil {
 		policyAns.Noul = ans.Probability
 	}
 	if ans.Choice != "" {
@@ -354,6 +454,7 @@ func evalAnswerToPolicy(ans evalAnswer) policy.Answer {
 	if ans.Score != nil {
 		policyAns.Score = ans.Score
 	}
+	policyAns.Confidence = ans.Confidence
 	return policyAns
 }
 

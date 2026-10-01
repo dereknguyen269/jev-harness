@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,6 +30,10 @@ type RequestContext struct {
 	WorkingDir  string `json:"working_dir"`
 	Platform    string `json:"platform"`
 	Agent       string `json:"agent"`
+	// Scope for policy grouping. Empty = match all.
+	Business string `json:"business,omitempty"`
+	Task     string `json:"task,omitempty"`
+	Category string `json:"category,omitempty"`
 }
 
 type DecisionRequest struct {
@@ -50,6 +56,9 @@ type DecisionResponse struct {
 	Reason          string     `json:"reason"`
 	Policy          PolicyInfo `json:"policy"`
 	RequestApproval bool       `json:"request_approval"`
+	// ApprovalTimeout carries the matched rule's approval_timeout (seconds,
+	// 0 = default) toward the harness TTL resolution.
+	ApprovalTimeout int `json:"approval_timeout,omitempty"`
 }
 
 type ToolAction struct {
@@ -70,10 +79,29 @@ type Rule struct {
 	Pattern  string `yaml:"pattern"`
 	Action   string `yaml:"action"`
 	Priority int    `yaml:"priority"`
+	// Grouping: all optional, empty = match all. Group is the primary
+	// bucket (e.g. "critical-safety", "secrets", "code-allow");
+	// category/business/task are free-form scopes for filtering
+	// (e.g. category: "safety", business: "payments", task: "deploy").
+	Group       string `yaml:"group,omitempty"`
+	Category    string `yaml:"category,omitempty"`
+	Business    string `yaml:"business,omitempty"`
+	Task        string `yaml:"task,omitempty"`
+	Description string `yaml:"description,omitempty"`
+	// ApprovalTimeout is the per-rule approval TTL in seconds, honoured
+	// only when action is approval_required (0 = default).
+	ApprovalTimeout int `yaml:"approval_timeout,omitempty"`
+}
+
+// GroupDef declares a policy group in the YAML header.
+type GroupDef struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
 }
 
 type PolicyConfig struct {
-	Rules []Rule `yaml:"rules"`
+	Groups []GroupDef `yaml:"groups,omitempty"`
+	Rules  []Rule     `yaml:"rules"`
 }
 
 type RuleEngine interface {
@@ -81,11 +109,77 @@ type RuleEngine interface {
 }
 
 type Engine struct {
-	rules    []Rule
+	rules []Rule
+	// groups is the declared header metadata (may be empty).
+	groups   []GroupDef
 	mu       sync.RWMutex
 	jev      JevClient
 	cache    Cache
 	compiled map[string]*regexp.Regexp
+	// activeGroups nil = all groups active. Non-nil = only listed groups
+	// (matched by group, category, business, or task name) are evaluated.
+	active map[string]bool
+}
+
+// SetActiveGroups restricts evaluation to the named groups/categories/
+// businesses/tasks. Empty/nil clears the filter (all rules active).
+// Names match against Rule.Group, Rule.Category, Rule.Business, Rule.Task.
+func (e *Engine) SetActiveGroups(names []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(names) == 0 {
+		e.active = nil
+		return
+	}
+	m := make(map[string]bool, len(names))
+	for _, n := range names {
+		if n = strings.TrimSpace(n); n != "" {
+			m[n] = true
+		}
+	}
+	e.active = m
+}
+
+// ActiveGroups returns the current filter (nil = all).
+func (e *Engine) ActiveGroups() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.active == nil {
+		return nil
+	}
+	out := make([]string, 0, len(e.active))
+	for k := range e.active {
+		out = append(out, k)
+	}
+	return out
+}
+
+func (e *Engine) isActiveLocked(r Rule) bool {
+	if e.active == nil {
+		return true
+	}
+	// Ungrouped/untagged rules always stay active so a filter can never
+	// silently disable the whole policy.
+	if r.Group == "" && r.Category == "" && r.Business == "" && r.Task == "" {
+		return true
+	}
+	return e.active[r.Group] || e.active[r.Category] || e.active[r.Business] || e.active[r.Task]
+}
+
+// matchesScopeLocked enforces rule-declared business/task scope against
+// the request context. Empty rule scope = match all.
+//
+// Category (and group) are taxonomy for the dashboard, NOT request scope:
+// adapters never send a category, so gating on it would silently disable
+// every tagged rule. Business/task remain genuine scopes.
+func matchesScopeLocked(r Rule, ctx RequestContext) bool {
+	if r.Business != "" && r.Business != ctx.Business {
+		return false
+	}
+	if r.Task != "" && r.Task != ctx.Task {
+		return false
+	}
+	return true
 }
 
 type JevClient interface {
@@ -121,9 +215,82 @@ func Load(path string) (*PolicyConfig, error) {
 	return &pc, nil
 }
 
+// LoadMerged loads a single policy file or, when path is a directory,
+// merges every *.yaml/*.yml inside it (sorted). Groups with the same name
+// are de-duplicated; rules are concatenated in file order (first match wins).
+func LoadMerged(path string) (*PolicyConfig, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsDir() {
+		return Load(path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	merged := &PolicyConfig{}
+	seenGroup := map[string]bool{}
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || !(strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")) {
+			continue
+		}
+		pc, err := Load(filepath.Join(path, name))
+		if err != nil {
+			return nil, fmt.Errorf("load %s: %w", name, err)
+		}
+		for _, g := range pc.Groups {
+			if !seenGroup[g.Name] {
+				seenGroup[g.Name] = true
+				merged.Groups = append(merged.Groups, g)
+			}
+		}
+		merged.Rules = append(merged.Rules, pc.Rules...)
+	}
+	return merged, nil
+}
+
+// ParseActiveGroups splits a comma/space-separated group filter
+// (flag or POLICY_GROUPS env) into names.
+func ParseActiveGroups(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Fields(strings.ReplaceAll(s, ",", " "))
+	var out []string
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Groups returns the declared group metadata.
+func (e *Engine) Groups() []GroupDef {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	// Derive from rules when no explicit header exists.
+	if len(e.groups) > 0 {
+		return e.groups
+	}
+	seen := map[string]bool{}
+	var out []GroupDef
+	for _, r := range e.rules {
+		if r.Group != "" && !seen[r.Group] {
+			seen[r.Group] = true
+			out = append(out, GroupDef{Name: r.Group})
+		}
+	}
+	return out
+}
+
 func NewEngine(pc *PolicyConfig, jevClient JevClient, c Cache) *Engine {
 	e := &Engine{
 		rules:    pc.Rules,
+		groups:   pc.Groups,
 		jev:      jevClient,
 		cache:    c,
 		compiled: make(map[string]*regexp.Regexp),
@@ -140,10 +307,36 @@ func (e *Engine) GetJevClient() JevClient {
 	return e.jev
 }
 
+// Reload swaps the rule set in place so a running gateway picks up
+// dashboard edits without restart. The active group filter is kept.
+// Unlike NewEngine it never panics: a bad pattern is skipped with a
+// warning so one typo can't disable the whole policy.
+func (e *Engine) Reload(pc *PolicyConfig) {
+	compiled := make(map[string]*regexp.Regexp, len(pc.Rules))
+	kept := make([]Rule, 0, len(pc.Rules))
+	for _, r := range pc.Rules {
+		if r.Pattern == "" {
+			continue
+		}
+		re, err := regexp.Compile(r.Pattern)
+		if err != nil {
+			log.Printf("warning: rule %q has invalid pattern, skipped: %v", r.ID, err)
+			continue
+		}
+		compiled[r.ID] = re
+		kept = append(kept, r)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.rules = kept
+	e.groups = pc.Groups
+	e.compiled = compiled
+}
+
 func (e *Engine) Evaluate(ctx context.Context, req DecisionRequest) (DecisionResponse, error) {
 	ta := Normalize(req.Tool, req.Args)
 
-	if dr, ok := e.Check(ta); ok {
+	if dr, ok := e.CheckWithContext(ta, req.Context); ok {
 		return dr, nil
 	}
 
@@ -225,10 +418,23 @@ func (e *Engine) Evaluate(ctx context.Context, req DecisionRequest) (DecisionRes
 
 	risk := 0.5
 	if riskAns.Score != nil {
-		risk = *riskAns.Score / 5.0
+		// The API returns score as a 0-based index into the criteria
+		// list (0..4 for our 5 levels) — normalize by the max index.
+		risk = *riskAns.Score / 4.0
+		if risk < 0 {
+			risk = 0
+		}
+		if risk > 1 {
+			risk = 1
+		}
 	}
 
 	confidence := allowAns.Confidence
+	if confidence == 0 && allowAns.Noul != nil {
+		// Noul answers carry no confidence field; derive it from the
+		// distance to the decision boundary (0.5).
+		confidence = math.Abs(*allowAns.Noul-0.5) * 2
+	}
 	if riskAns.Confidence > confidence {
 		confidence = riskAns.Confidence
 	}
@@ -256,11 +462,24 @@ func (e *Engine) Evaluate(ctx context.Context, req DecisionRequest) (DecisionRes
 }
 
 func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
+	return e.CheckWithContext(ta, RequestContext{})
+}
+
+// CheckWithContext is group- and scope-aware: rules outside the active
+// group filter or whose business/task/category scope doesn't match ctx
+// are skipped. First match wins (file order).
+func (e *Engine) CheckWithContext(ta ToolAction, ctx RequestContext) (DecisionResponse, bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
 	for _, r := range e.rules {
 		if r.Tool != "" && r.Tool != ta.Tool && r.Tool != "*" {
+			continue
+		}
+		if !e.isActiveLocked(r) {
+			continue
+		}
+		if !matchesScopeLocked(r, ctx) {
 			continue
 		}
 		re, ok := e.compiled[r.ID]
@@ -294,13 +513,17 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 			}
 		}
 		if matched {
+			desc := ""
+			if r.Description != "" {
+				desc = ": " + r.Description
+			}
 			switch strings.ToLower(r.Action) {
 			case "block":
 				return DecisionResponse{
 					Decision:        Block,
 					Risk:            1.0,
 					Confidence:      1.0,
-					Reason:          fmt.Sprintf("Blocked by rule %s: %s", r.ID, target),
+					Reason:          fmt.Sprintf("Blocked by rule %s [risk=1.00 CRITICAL]%s — matched: %s", r.ID, desc, target),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: false,
 				}, true
@@ -309,16 +532,17 @@ func (e *Engine) Check(ta ToolAction) (DecisionResponse, bool) {
 					Decision:        ApprovalRequired,
 					Risk:            0.8,
 					Confidence:      0.9,
-					Reason:          fmt.Sprintf("Approval required by rule %s: %s", r.ID, target),
+					Reason:          fmt.Sprintf("Approval required by rule %s [risk=0.80 PRIVILEGED]%s — matched: %s", r.ID, desc, target),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: true,
+					ApprovalTimeout: r.ApprovalTimeout,
 				}, true
 			case "allow":
 				return DecisionResponse{
 					Decision:        Allow,
 					Risk:            0.0,
 					Confidence:      1.0,
-					Reason:          fmt.Sprintf("Allowed by rule %s", r.ID),
+					Reason:          fmt.Sprintf("Allowed by rule %s%s", r.ID, desc),
 					Policy:          PolicyInfo{RuleID: r.ID},
 					RequestApproval: false,
 				}, true
@@ -499,6 +723,12 @@ func hashKey(tool string, ta ToolAction, ctx RequestContext) string {
 	}
 	sb.WriteString("|")
 	sb.WriteString(ctx.WorkingDir)
+	sb.WriteString("|")
+	sb.WriteString(ctx.Business)
+	sb.WriteString("|")
+	sb.WriteString(ctx.Task)
+	sb.WriteString("|")
+	sb.WriteString(ctx.Category)
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(sb.String())).String()
 }
 

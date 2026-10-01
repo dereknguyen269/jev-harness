@@ -35,3 +35,39 @@
   command: ""
   path: /home/user/.env
   expected: approval_required
+- name: git_fetch
+  tool: terminal
+  command: git fetch origin
+  expected: allow
+- name: git_branch_new
+  tool: terminal
+  command: git checkout -b feature/x
+  expected: allow
+- name: git_clean_force
+  tool: terminal
+  command: git clean -fdx
+  expected: approval_required
+- name: git_filter_branch
+  tool: terminal
+  command: git filter-branch --tree-filter 'rm -f secret'
+  expected: approval_required
+- name: git_plain_reset
+  tool: terminal
+  command: git reset HEAD file.txt
+  expected: block
+- name: git_plain_push
+  tool: terminal
+  command: git push origin main
+  expected: block
+- name: go_test
+  tool: terminal
+  command: go test ./...
+  expected: allow
+- name: safe_pwd
+  tool: terminal
+  command: pwd
+  expected: allow
+- name: mkfs_block
+  tool: terminal
+  command: mkfs.ext4 /dev/sdb1
+  expected: block

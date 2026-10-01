@@ -1,6 +1,12 @@
 # Permissive profile: minimal friction, still blocks critical deletes.
+groups:
+  - name: critical-safety
+    description: Irreversible destructive commands (always block)
 policies:
   - id: root-delete
+    group: critical-safety
+    category: safety
+    description: Irreversible root delete
     match:
       tool: terminal
       command:

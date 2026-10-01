@@ -10,6 +10,12 @@ type AuditEvent struct {
 	Agent string `json:"agent"`
 	Tool  string `json:"tool"`
 
+	// What was actually attempted: command for terminal/execute,
+	// path for file tools, resource for the rest (e.g. URL, relocate src->dst).
+	Command  string `json:"command,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Resource string `json:"resource,omitempty"`
+
 	PolicyDecision string `json:"policy_decision,omitempty"`
 	JevDecision    string `json:"jev_decision,omitempty"`
 	FinalDecision  string `json:"final_decision"`

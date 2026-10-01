@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex tool interception shim → Jev Guard /v2/check (thin shim, stdlib only)."""
+"""Codex tool interception shim → Jev Guard /v1/check (thin shim, stdlib only)."""
 import json
 import os
 import sys
@@ -18,7 +18,7 @@ def main():
         "context": {"workspace": os.getcwd()},
     }).encode()
     try:
-        req = urllib.request.Request(GUARD_URL + "/v2/check", data=body,
+        req = urllib.request.Request(GUARD_URL + "/v1/check", data=body,
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
             decision = json.loads(res.read().decode() or "{}")

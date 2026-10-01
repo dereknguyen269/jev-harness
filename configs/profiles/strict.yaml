@@ -1,6 +1,16 @@
 # Strict profile: edits ask, production blocks.
+groups:
+  - name: critical-safety
+    description: Irreversible destructive commands (always block)
+  - name: privileged-ops
+    description: Elevated or production-affecting operations (ask)
+  - name: code-allow
+    description: Everyday programming file edits (allow)
 policies:
   - id: root-delete
+    group: critical-safety
+    category: safety
+    description: Irreversible root delete
     match:
       tool: terminal
       command:
@@ -10,6 +20,9 @@ policies:
       risk: 1.0
       reason_code: CRITICAL_DELETE
   - id: sudo
+    group: privileged-ops
+    category: safety
+    description: Elevated privileges
     match:
       tool: terminal
       command:
@@ -19,6 +32,8 @@ policies:
       risk: 0.85
       reason_code: PRIVILEGED
   - id: production
+    category: safety
+    description: Production environment blocked
     match:
       context:
         environment: production
@@ -27,6 +42,9 @@ policies:
       risk: 1.0
       reason_code: PROD_BLOCKED
   - id: write-any
+    group: code-allow
+    category: productivity
+    description: All file writes ask under strict
     match:
       tool: write_file
     decision:
@@ -34,6 +52,9 @@ policies:
       risk: 0.6
       reason_code: STRICT_WRITE
   - id: git-read
+    group: git
+    category: productivity
+    description: Read-only git inspection
     match:
       tool: terminal
       command:

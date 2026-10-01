@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Kiro PreToolUse guard — canonical source: jev-harness/plugins/kiro."""
+"""Kiro PreToolUse guard — canonical source: jev-harness/plugins/kiro.
+
+Maps guard verdicts onto the hook contract (exit 0 = allow, exit 2 = block,
+exit 0 + ask JSON = human prompt).
+
+WARNING: JEV_GUARD_FAIL_OPEN=1 makes guard-unreachable silently ALLOW the
+tool. That env var is a testing/debugging escape hatch, never for routine
+use — anyone who can set process env can switch the gate off.
+"""
 import argparse
 import json
 import os
@@ -85,7 +93,10 @@ def apply_fallbacks(payload, flags):
     if not tool_args(payload):
         flag_cmd = flags.command or os.environ.get("KIRO_COMMAND", "")
         if flag_cmd:
-            payload["tool_input"] = {"command": flag_cmd, "path": flag_cmd}
+            # Command only: never mirror it into "path" — the guard matches
+            # file rules against the path arg, and a shell command string
+            # must not be evaluated as a file path.
+            payload["tool_input"] = {"command": flag_cmd}
     if not pick(payload, DIR_KEYS, ""):
         flag_cwd = flags.cwd or os.environ.get("KIRO_CWD", "")
         if flag_cwd:
@@ -101,15 +112,18 @@ def guard_url_and_timeout(flags):
 
 
 def call_guard(tool, args, payload, url, timeout):
+    # NOTE: user_request/prompt is forwarded so the judge sees intent, which
+    # means full prompt text lands in guard audit logs. Do not use this hook
+    # with prompts that must not be retained.
     body = json.dumps(
         {
-            "tool": tool,
-            "args": args,
+            "agent": {"name": "kiro"},
+            "tool": {"name": tool, "args": args},
             "context": {
                 "user_request": str(pick(payload, ("user_request", "prompt"), "")),
                 "working_dir": str(pick(payload, DIR_KEYS, os.getcwd())),
+                "workspace": str(pick(payload, DIR_KEYS, os.getcwd())),
                 "platform": "kiro",
-                "agent": "kiro",
             },
         }
     ).encode("utf-8")
@@ -125,14 +139,25 @@ def call_guard(tool, args, payload, url, timeout):
         return json.loads(res.read().decode("utf-8") or "{}")
 
 
+def approval_ref(decision):
+    aid = decision.get("approval_id") or ""
+    if not aid:
+        return ""
+    short = str(aid)[:8]
+    return " [approval %s: dashboard or `jev-guard approve|deny %s`]" % (short, short)
+
+
 def block(reason):
     sys.stderr.write("Blocked by Jev guard: %s\n" % reason)
     sys.exit(BLOCK)
 
 
 def ask(reason):
+    # hookEventName is required: without it Claude-compatible hosts ignore
+    # this JSON and the exit-0 below would silently allow the tool.
     json.dump(
-        {"hookSpecificOutput": {"permissionDecision": "ask",
+        {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                "permissionDecision": "ask",
                                 "permissionDecisionReason": "Jev guard: %s" % reason}},
         sys.stdout,
     )
@@ -147,7 +172,7 @@ def as_float(value, default=0.0):
 def describe(decision, reason, tool):
     risk = decision.get("risk")
     conf = decision.get("confidence")
-    rule = (decision.get("policy") or {}).get("rule_id")
+    rule = decision.get("policy_id")
     bits = ["%s on %s" % (reason, tool)]
     if risk is not None:
         bits.append("risk %.2f" % as_float(risk))
@@ -177,13 +202,16 @@ def main(argv=None):
     verdict = str(decision.get("decision", "allow")).lower()
     reason = decision.get("reason") or "risk detected"
     if verdict in ("approval_required", "ask") or decision.get("request_approval"):
-        ask(reason)
-    if verdict == "block" or decision.get("allow") is False:
+        # Host-prompt answer stays host-local: it does not write back to
+        # the guard record (which then expires). The ref lets the human
+        # decide in the dashboard/terminal instead, converging on one record.
+        ask(reason + approval_ref(decision))
+    if verdict == "block":
         risk = as_float(decision.get("risk"), 1.0)
         if BLOCK_MODE == "ask" and risk < HARD_BLOCK_RISK:
             ask(describe(decision, reason, tool))
         block(describe(decision, reason, tool))
-    if verdict == "allow" or decision.get("allow") is True:
+    if verdict == "allow":
         sys.exit(ALLOW)
     if BLOCK_MODE == "ask":
         ask("unrecognized guard decision %r on %s" % (verdict, tool))

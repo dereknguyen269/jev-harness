@@ -57,8 +57,10 @@ chmod +x "$DEST_PY"
 render_template() {
   # python3 is required (it also validates the hook JSON below).
   command -v python3 >/dev/null 2>&1 || { echo "Error: python3 not found in PATH"; exit 1; }
+  # Backslashes are JSON-escaped so Windows paths (C:\...) stay valid JSON;
+  # on unix the replacement is a no-op.
   DEST_PY_ABS="$1" SRC="$2" OUT="$3" python3 -c \
-    "import os; s=open(os.environ['SRC']).read().replace('__GUARD_SCRIPT__', os.environ['DEST_PY_ABS']); open(os.environ['OUT'],'w').write(s)"
+    "import os; s=open(os.environ['SRC']).read().replace('__GUARD_SCRIPT__', os.environ['DEST_PY_ABS'].replace(chr(92), chr(92)*2)); open(os.environ['OUT'],'w').write(s)"
 }
 if [ -f "$DEST_HOOK" ] && [ "$FORCE" != "true" ]; then
   echo "Exists: $DEST_HOOK"
@@ -76,7 +78,7 @@ python3 -m json.tool "$DEST_HOOK" >/dev/null && echo "Hook JSON valid"
 echo ""
 echo "Scope: $SCOPE  Base: $BASE"
 echo "Next steps:"
-echo "1. Start the guard: go build -o guard ./cmd/harness && ./guard -listen 0.0.0.0:8787"
+echo "1. Start the guard: go build -o jev-guard ./cmd/jev-guard && ./jev-guard serve --listen 0.0.0.0:8787"
 echo "2. Restart Kiro CLI / Kiro IDE so it picks up .kiro/hooks/jev-guard.json"
 echo "3. Test: echo '{\"tool_name\":\"execute_bash\",\"tool_input\":{\"command\":\"git status\"}}' | python3 $DEST_PY; echo exit=\$?"
 echo "   Tune with JEV_GUARD_BLOCK_MODE=ask|block JEV_GUARD_TIMEOUT_MS=5000 (see plugins/kiro/README.md)"

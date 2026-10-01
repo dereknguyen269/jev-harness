@@ -4,3 +4,8 @@
 /harness
 *.test.json
 *.log
+web/node_modules/
+.opencode/skills/
+internal/server/web/dist/
+*.db
+/dist/

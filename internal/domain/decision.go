@@ -23,6 +23,11 @@ type DecisionResult struct {
 	RequestApproval bool   `json:"request_approval"`
 	ApprovalID      string `json:"approval_id,omitempty"`
 	ExpiresIn       int    `json:"expires_in,omitempty"`
+
+	// ApprovalTimeoutSecs is an internal per-decision TTL hint (seconds,
+	// 0 = use the harness default). Never serialized: json:"-" keeps the
+	// /v1/check body unchanged.
+	ApprovalTimeoutSecs int `json:"-"`
 }
 
 // RiskLevel classifies tool calls L0..L4.
